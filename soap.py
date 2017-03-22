@@ -1002,7 +1002,6 @@ class SOAP(Kern):
                 rank = comm.Get_rank()
 
                 chunk, chunksizes, offsets = partition_ltri_rows(X.shape[0], rank, size)
-                self.print(chunk, chunksizes, offsets)
                 Klocal = np.zeros((chunksizes[rank], X.shape[0]))
                 for i in range(chunk[0], chunk[1]):
                     Klocal[i - offsets[rank], i] = 1.
