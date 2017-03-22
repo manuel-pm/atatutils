@@ -369,10 +369,6 @@ class SOAP(Kern):
         self.l_max = l_max
         self.n_max = n_max
         self.delta_r = r_cut/n_max
-        # S = basis_overlap(n_max, r_cut, self.alpha)
-        # self.S = S
-        # self.chol_S = scipy.linalg.cho_factor(S, lower=False, check_finite=False)  # np.linalg.cholesky(S).T
-        # self.chol_S = (scipy.linalg.cholesky(S, lower=True, check_finite=False), True)
         self.quad_order = quadrature_order
         self.quad_type = quadrature_type
         self.set_r_grid(r_grid_points)
@@ -498,29 +494,6 @@ class SOAP(Kern):
             pass
         self.Gr2dr = np.einsum('ij, j -> ij', G, self.r2dr)
 
-        """
-        S = np.empty((self.n_max, self.n_max))
-        for i in range(self.n_max):
-            for j in range(self.n_max):
-                S[i, j] = self.inner_product_Gn(i, G[j, :], inner_product_mode=='romberg')
-        print(self.r_grid.shape[0], order, ': ', np.linalg.norm(S - np.eye(self.n_max)))
-
-        import matplotlib.pyplot as plt
-        for p in self.r_grid:
-            plt.axvline(p, lw=0.5)
-        plt.plot(self.r_grid, G.T)
-        plt.plot(self.r_grid, self.Gr2dr.T, '--')
-        plt.show(block=True)
-        sys.exit(0)
-
-        for order in range(2, 21):
-            fac = 8
-            idx = range(0, self.r_grid.shape[0], fac)
-            red_grid = self.r_grid[idx]
-            self.compute_weights(red_grid.shape[0], 1, order)
-            print(order, ': ', 1 - np.dot(self.iweights * self.r2dr[idx]*fac * G[0][idx], G[0][idx]))
-        """
-
         # Using QR factorisation on numerical approximation of the basis overlap
         # multiply by r to orthonomalise in radial coordinates
         # \int_{0}^{r_{c}} \phi_n(r)\phi_{n'}(r)r^2\,dr -> \int_0^{r_c} \g_n(r)\g_{n'}(r)r^2\,dr = \delta{nn'}
@@ -560,6 +533,13 @@ class SOAP(Kern):
         r_cartesian = np.copy(atoms.positions)
         r, theta, phi = cart2sph(r_cartesian)
 
+        r_grid2 = self.r_grid * self.r_grid
+        ar2g2 = np.empty((r.shape[0], r_grid2.shape[0]))
+        arg = np.empty((r.shape[0], r_grid2.shape[0]))
+        for a in range(r.shape[0]):
+            ar2g2[a] = alpha * (r[a] * r[a] + r_grid2)
+            arg[a] = 2. * alpha * r[a] * self.r_grid
+
         if self.parallel_cnlm:
             from mpi4py import MPI
             comm = MPI.COMM_WORLD
@@ -577,13 +557,6 @@ class SOAP(Kern):
             # Local update
             lchunk = [offsets[rank], offsets[rank] + chunksizes[rank]]
 
-            r_grid2 = self.r_grid * self.r_grid
-            ar2g2 = np.empty((r.shape[0], r_grid2.shape[0]))
-            arg = np.empty((r.shape[0], r_grid2.shape[0]))
-            for a in range(r.shape[0]):
-                ar2g2[a] = alpha * (r[a] * r[a] + r_grid2)
-                arg[a] = 2. * alpha * r[a] * self.r_grid
-
             for idx in range(lchunk[0], lchunk[1]):
                 n = idx / (self.l_max*self.l_max)
                 nidx = idx % (self.l_max*self.l_max)
@@ -592,11 +565,8 @@ class SOAP(Kern):
                 for a in range(r.shape[0]):
                     if derivative:
                         I_01, dI_01 = c_ilm2(l, m, alpha, ar2g2[a], theta[a], phi[a], arg[a], derivative)
-                        # I_01, dI_01 = c_ilm(l, m, alpha, r[a], theta[a], phi[a], self.r_grid, derivative)
                     else:
                         I_01 = c_ilm2(l, m, alpha, ar2g2[a], theta[a], phi[a], arg[a])
-                        # I_01 = c_ilm(l, m, alpha, r[a], theta[a], phi[a], self.r_grid)
-                        # I_01 = 4 * np.pi * exp_iv(-ar2g2[a], l, arg[a]) * np.conj(sp.sph_harm(m, l, theta[a], phi[a]))
                     c_nlm[idx] += np.dot(self.Gr2dr[n], I_01)  # \sum_i\int r^2 g_n(r) c^i_{lm}(r)\,dr
                     if derivative:
                         dc_nlm[idx] += np.dot(self.Gr2dr[n], dI_01)  # \sum_i\int r^2 g_n(r) c^i_{lm}(r)'\,dr
@@ -611,22 +581,14 @@ class SOAP(Kern):
             for a, n, l in itertools.product(range(r.shape[0]), range(self.n_max), range(self.l_max)):
                 for m in range(-l, l + 1):
                     if derivative:
-                        I_01, dI_01 = c_ilm(l, m, alpha, r[a], theta[a], phi[a], self.r_grid, derivative)
+                        I_01, dI_01 = c_ilm2(l, m, alpha, ar2g2[a], theta[a], phi[a], arg[a], derivative)
                     else:
-                        I_01 = c_ilm(l, m, alpha, r[a], theta[a], phi[a], self.r_grid)
+                        I_01 = c_ilm2(l, m, alpha, ar2g2[a], theta[a], phi[a], arg[a])
                     idx = n * self.l_max * self.l_max + l * l + (m + l)
                     c_nlm[idx] += np.dot(self.Gr2dr[n], I_01)
                     if derivative:
                         dc_nlm[idx] += np.dot(self.Gr2dr[n], dI_01)
-            """
-            for a in range(r.shape[0]):
-                for n in range(self.n_max):
-                    for l in range(self.l_max):
-                        for m in range(-l, l + 1):
-                            I_01 = c_ilm(l, m, self.alpha, r[a], theta[a], phi[a], self.r_grid)
-                            idx = n*self.l_max*self.l_max + l*l + (m + l)
-                            c_nlm[idx] += np.dot(self.Gr2dr[n], I_01)
-            """
+
         if derivative:
             return c_nlm, dc_nlm
         return c_nlm
@@ -640,11 +602,9 @@ class SOAP(Kern):
         c_nlm = np.empty((n_species, self.n_max, self.l_max*self.l_max), dtype=complex)
         if derivative:
             dc_nlm = np.ones((n_species, self.n_max, self.l_max * self.l_max), dtype=complex)
-            # dpspectrum = np.empty((n_species, n_species, self.n_max, self.n_max, self.l_max), dtype=complex)
             dpspectrum = np.empty((n_species, n_species, n_species, self.n_max, self.n_max, self.l_max), dtype=complex) # FIXME: multi-alpha
         for i in range(n_species):
             satoms = copy.deepcopy(atoms)
-            # to_delete = [n for (n, atom) in enumerate(satoms) if atom.numbers[0]!=species[i]]
             del satoms[[n for (n, atom) in enumerate(satoms) if atom.numbers[0]!=species[i]]]
             # TODO: Choose atom dependent alpha here
             # FIXME: multi-alpha
@@ -665,9 +625,6 @@ class SOAP(Kern):
                             pspectrum[s1, s2, i, j, l] = \
                                     np.vdot(c_nlm[s2, j, l * l: l * l + 2 * l + 1],
                                             c_nlm[s1, i, l * l: l * l + 2 * l + 1]) / np.sqrt(2 * l + 1)
-                            #pspectrum[s1, s2, i, j, l] = \
-                            #    np.dot(c_nlm[s1, i, l * l: l * l + 2 * l + 1],
-                            #           np.conj(c_nlm[s2, j, l * l: l * l + 2 * l + 1])) / np.sqrt(2 * l + 1)
         if derivative:
             """
             for s1 in range(n_species):
@@ -731,7 +688,6 @@ class SOAP(Kern):
         if len(r.shape) == 1:
             r = r[np.newaxis, :]
         d = np.linalg.norm(atoms[:, :, np.newaxis] - r.T, axis=1)
-        # print(self.alpha, d.shape, np.exp(-self.alpha*d*d))
         return np.exp(-self.alpha*d*d).sum(axis=0)
  
     def I(self, atoms0, atoms1):
@@ -750,9 +706,6 @@ class SOAP(Kern):
                 for m1 in range(2 * l + 1):
                     for i in range(r0.shape[0]):
                         for j in range(r1.shape[0]):
-                            #I_i = c_ilm(l, m0-l, self.alpha, r0[i], theta0[i], phi0[i], self.r_grid)
-                            #I_j = c_ilm(l, m1-l, self.alpha, r1[j], theta1[j], phi1[j], self.r_grid)
-                            #I_01 = np.sum(I_i*I_j*self.r_grid*self.r_grid)*(self.r_grid[1]-self.r_grid[0])
                             I_01 = 4 * np.pi * (np.pi/(2*self.alpha))**(3./2) * \
                                    np.exp(-self.alpha *
                                           (r0[i] * r0[i] + r1[j] * r1[j]) /
@@ -790,15 +743,8 @@ class SOAP(Kern):
         start = timer()
         if self.multi_atom:
             n_species = len(species)
-            #kappa = np.empty((n_species, n_species))
-            #for s1 in range(n_species):
-            #    for s2 in range(n_species):
-            #        kappa[s1, s2] = self.similarity(species[s1], species[s2])
         else:
-            #species = None
             n_species = 1
-            #kappa = np.array([[1.]])
-
 
         n = atoms.positions.shape[0]
         if nl is None:
@@ -837,7 +783,6 @@ class SOAP(Kern):
             X2_shape = X2.shape[0]
         else:
             X2_shape = X.shape[0]
-            #X2 = X.copy()
         K = np.empty((X_shape, X2_shape))
 
         if self.parallel_data:
@@ -875,7 +820,7 @@ class SOAP(Kern):
                         save_X = False
                         break
                 # Need checking if in X so that it does not need saving (it will be saved from its occurrence in X)
-                ## FIXME Also, we can load from the calculation for X (always done before X2)
+                ## FIXME: Also, we can load from the calculation for X (always done before X2)
                 for i, X_i in enumerate(X[:, 0]):
                     if X_i == X2_i:
                         # All X_i are either marked for saving or loading, so no need for X2 to save.
@@ -900,13 +845,10 @@ class SOAP(Kern):
         if X.dtype.kind == 'S':
             tmp = np.empty(X.shape, dtype=ase.Atoms)
             for i, folder in enumerate(X[:, 0]):
-                # self.print(os.path.join(folder, self.structure_file))
                 tmp[i, 0] = ATAT2GPAW(os.path.join(folder, self.structure_file)).get_atoms()
                 self.folder2idx[folder] = i
                 self.idx2folder[i] = folder
-                # self.print(folder, folder.split('/'), '/'.join(folder.split('/')[0:-1]))
                 material_id.append('/'.join(folder.split('/')[0:-1]))
-                # self.structure_buffer[os.path.abspath(folder)] = tmp[i, 0]
             X = tmp
 
         if X2 is not None:
@@ -918,7 +860,6 @@ class SOAP(Kern):
                     tmp[i, 0] = ATAT2GPAW(os.path.join(folder, self.structure_file)).get_atoms()
                     self.idx2folderX2[i] = folder
                     material_id2.append('/'.join(folder.split('/')[0:-1]))
-                    # self.structure_buffer[os.path.abspath(folder)] = tmp[i, 0]
                 X2 = tmp
 
         if False:  # Plot some pseudo-densities
@@ -994,22 +935,14 @@ class SOAP(Kern):
                 Klocal = self._K(X, X2, load_X, load_X2, material_id, material_id2)
             comm.Allgatherv(Klocal, [K, chunksizes * X2_shape, offsets * X2_shape, MPI.DOUBLE])
         else:
-            # print(self.optimize_sigma, self.derivative)
             if self.optimize_sigma and self.derivative:
                 K = self._K_dK(X, X2, load_X, load_X2, material_id, material_id2)
                 self.derivative = False
             else:
                 K = self._K(X, X2, load_X, load_X2, material_id, material_id2)
-        """
-        if self.parallel_data:
-            Klocal = self._K(X, X2, load_X, load_X2)
-            comm.Allgatherv(Klocal, [K, chunksizes * X2_shape, offsets * X2_shape, MPI.DOUBLE])
-        else:
-            K = self._K(X, X2, load_X, load_X2)
-        """
+
         self.kernel_times.append(timer() - start)
         return K
-        # return self._K(X, X2, load_X, load_X2)
 
     def _K(self, X, X2, load_X, load_X2, material_id, material_id2):
 
@@ -1043,7 +976,6 @@ class SOAP(Kern):
                             for s2 in range(n_species):
                                 kappa_all[(material1, material2)][s1, s2] = self.similarity(self.elements[material1][s1],
                                                                                             self.elements[material2][s2])
-
             else:
                 kappa = kappa_full
         else:   
@@ -1097,7 +1029,6 @@ class SOAP(Kern):
                 Klocal = np.zeros((chunksizes[rank], X.shape[0]))
                 for i in range(chunk[0], chunk[1]):
                     Klocal[i - offsets[rank], i] = 1.
-                # print('chunk[{}] = {}'.format(rank, chunk))
                 comm.barrier()  # make sure all pss are available
             else:
                 Klocal = K
@@ -1107,45 +1038,36 @@ class SOAP(Kern):
                 rank = 0
 
             for d1 in range(chunk[0], chunk[1]):
-                # nl[d1].update(X[d1, 0])
                 for d2 in range(d1):
                     if self.materials is not None:
                         kappa = kappa_all[(material_id[d1], material_id[d2])]
                         kappa11 = kappa_all[(material_id[d1], material_id[d1])]
                         kappa22 = kappa_all[(material_id[d2], material_id[d2])]
-                        #kappa = kappa_full
                     else:
                         kappa = kappa_full
                         kappa11 = kappa_full
                         kappa22 = kappa_full
-                    # self.print(kappa, material_id[d1], material_id[d2])
                     if self.verbosity > 1:
-                        # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                        # self.print('\n')
                         self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x '*(d2 + 1) + '. '*(d1 - d2 - 1) + '1 ',
                               end=''); sys.stdout.flush()
-                    # nl[d2].update(X[d2, 0])
                     if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
                         K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
-                        #K01 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d2]), kappa, kappa).real
                         self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]] = self.Kcross_buffer[self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
                     else:
                         K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]]
                     if self.idx2folder[d1] not in self.Kdiag_buffer:
-                        # K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa, kappa).real
                         K00 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d1]), kappa11, kappa11).real
                         self.Kdiag_buffer[self.idx2folder[d1]] = K00
                     else:
                         K00 = self.Kdiag_buffer[self.idx2folder[d1]]
                     if self.idx2folder[d2] not in self.Kdiag_buffer:
-                        # K11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], pss[d2], kappa, kappa).real
                         K11 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d2], pss[d2]), kappa22, kappa22).real
                         self.Kdiag_buffer[self.idx2folder[d2]] = K11
                     else:
                         K11 = self.Kdiag_buffer[self.idx2folder[d2]]
 
                     Kij = self.K_reduction(K01) / np.sqrt(self.K_reduction(K00) * self.K_reduction(K11))
-                    Klocal[d1 - offsets[rank], d2] = Kij  # self.Kij(X[d1, 0], X[d2, 0], nl[d1], nl[d2])
+                    Klocal[d1 - offsets[rank], d2] = Kij
 
             if self.parallel_cnlm:
                 comm.Allgatherv(Klocal, [K, chunksizes * X.shape[0], offsets * X.shape[0], MPI.DOUBLE])
@@ -1194,22 +1116,12 @@ class SOAP(Kern):
                             break
                     except:
                         pass
-            """
-            if self.verbosity > 1:
-                print('\rPow. spec. {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
-            nl1[i].update(X[i, 0])
-            pss.append(self.get_all_power_spectrums(X[i, 0], nl1[i], species))
-            """
 
         # TODO: TEST pss buffering for X2
         pss2 = []
         for i in range(X2.shape[0]):
             if self.materials is not None:
                 species = material_elements[material_id2[i]]
-            # if self.verbosity > 0:
-            #     self.print('\rPow. spec. 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
-            # nl2[i].update(X2[i, 0])
-            # pss2.append(self.get_all_power_spectrums(X2[i, 0], nl2[i], species))
 
             load = -1
             # Check if pss available and choose which one to load
@@ -1245,7 +1157,6 @@ class SOAP(Kern):
 
             chunk, chunksizes, offsets = partition1d(X.shape[0], rank, size)
             Klocal = np.zeros((chunksizes[rank], X2.shape[0]))
-            # print('chunk[{}] = {}'.format(rank, chunk))
             comm.barrier()  # make sure all pss are available
         else:
             Klocal = K
@@ -1254,9 +1165,7 @@ class SOAP(Kern):
             offsets = [0]
             rank = 0
 
-
         for d1 in range(chunk[0], chunk[1]):
-            # nl1[d1].update(X[d1, 0])
             for d2 in range(X2.shape[0]):
                 if self.materials is not None:
                     kappa = kappa_all[(material_id[d1], material_id2[d2])]
@@ -1267,10 +1176,7 @@ class SOAP(Kern):
                     kappa11 = kappa_full
                     kappa22 = kappa_full
                 if self.verbosity > 1:
-                    # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                    # self.print('\n')
                     self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[rank]) + 'x '*(d2 + 1) + '. '*(X2.shape[0] - d2 -1), end=''); sys.stdout.flush()
-                # nl2[d2].update(X2[d2, 0])
                 """
                 if self.idx2folder[d1] + self.idx2folderX2[d2] not in self.Kcross_buffer:
                     K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
@@ -1295,8 +1201,7 @@ class SOAP(Kern):
                 Kij = pow(self.K_reduction(K01) / \
                           np.sqrt(self.K_reduction(K00) * self.K_reduction(K11)), self.exponent)
                 Kij = self.K_reduction(K01) / np.sqrt(self.K_reduction(K00) * self.K_reduction(K11))
-                Klocal[d1 - offsets[rank], d2] = Kij  # self.Kij(X[d1, 0], X[d2, 0], nl[d1], nl[d2])
-                # K[d1, d2] = self.Kij(X[d1, 0], X2[d2, 0], nl1[d1], nl2[d2])
+                Klocal[d1 - offsets[rank], d2] = Kij
         if self.verbosity > 1:
             self.print('')
 
@@ -1380,42 +1285,33 @@ class SOAP(Kern):
 
             if False:
                 for d1 in range(X.shape[0]):
-                    # nl[d1].update(X[d1, 0])
                     for d2 in range(d1):
                         if self.materials is not None:
                             kappa = kappa_all[(material_id[d1], material_id[d2])]
                             kappa11 = kappa_all[(material_id[d1], material_id[d1])]
                             kappa22 = kappa_all[(material_id[d2], material_id[d2])]
-                            # kappa = kappa_full
                         else:
                             kappa = kappa_full
                             kappa11 = kappa_full
                             kappa22 = kappa_full
-                        # self.print(kappa, material_id[d1], material_id[d2])
                         if self.verbosity > 1:
-                            # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                            # self.print('\n')
                             self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
                             d1 - d2 - 1) + '1 ',
                                        end='');
                             sys.stdout.flush()
-                        # nl[d2].update(X[d2, 0])
                         if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
                             K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
-                            # K01 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d2]), kappa, kappa).real
                             self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]] = self.Kcross_buffer[
                                 self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
                         else:
                             K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]]
                         if self.idx2folder[d1] not in self.Kdiag_buffer:
-                            # K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa, kappa).real
                             K00 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d1]), kappa11,
                                             kappa11).real
                             self.Kdiag_buffer[self.idx2folder[d1]] = K00
                         else:
                             K00 = self.Kdiag_buffer[self.idx2folder[d1]]
                         if self.idx2folder[d2] not in self.Kdiag_buffer:
-                            # K11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], pss[d2], kappa, kappa).real
                             K11 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d2], pss[d2]), kappa22,
                                             kappa22).real
                             self.Kdiag_buffer[self.idx2folder[d2]] = K11
@@ -1443,45 +1339,36 @@ class SOAP(Kern):
                         Kij = rK01 / np.sqrt(rK00 * rK11)  # pow(rK01 / np.sqrt(rK00 * rK11), self.exponent)
 
                         dK_dalpha[d1, d2] = dKij
-                        K[d1, d2] = Kij  # self.Kij(X[d1, 0], X[d2, 0], nl[d1], nl[d2])
+                        K[d1, d2] = Kij
             else: # FIXME: multi-alpha
                 for d1 in range(X.shape[0]):
-                    # nl[d1].update(X[d1, 0])
                     for d2 in range(d1):
                         if self.materials is not None:
                             kappa = kappa_all[(material_id[d1], material_id[d2])]
                             kappa11 = kappa_all[(material_id[d1], material_id[d1])]
                             kappa22 = kappa_all[(material_id[d2], material_id[d2])]
-                            # kappa = kappa_full
                         else:
                             kappa = kappa_full
                             kappa11 = kappa_full
                             kappa22 = kappa_full
-                        # self.print(kappa, material_id[d1], material_id[d2])
                         if self.verbosity > 1:
-                            # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                            # self.print('\n')
                             self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
                             d1 - d2 - 1) + '1 ',
                                        end='');
                             sys.stdout.flush()
-                        # nl[d2].update(X[d2, 0])
                         if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
                             K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
-                            # K01 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d2]), kappa, kappa).real
                             self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]] = self.Kcross_buffer[
                                 self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
                         else:
                             K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]]
                         if self.idx2folder[d1] not in self.Kdiag_buffer:
-                            # K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa, kappa).real
                             K00 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d1]), kappa11,
                                             kappa11).real
                             self.Kdiag_buffer[self.idx2folder[d1]] = K00
                         else:
                             K00 = self.Kdiag_buffer[self.idx2folder[d1]]
                         if self.idx2folder[d2] not in self.Kdiag_buffer:
-                            # K11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], pss[d2], kappa, kappa).real
                             K11 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d2], pss[d2]), kappa22,
                                             kappa22).real
                             self.Kdiag_buffer[self.idx2folder[d2]] = K11
@@ -1492,48 +1379,39 @@ class SOAP(Kern):
                         rK11 = self.K_reduction(K11)
                         rK01 = self.K_reduction(K01)
 
-                        Kij = rK01 / np.sqrt(rK00 * rK11)  # pow(rK01 / np.sqrt(rK00 * rK11), self.exponent)
+                        Kij = rK01 / np.sqrt(rK00 * rK11)
 
-                        K[d1, d2] = Kij  # self.Kij(X[d1, 0], X[d2, 0], nl[d1], nl[d2])
+                        K[d1, d2] = Kij
                 # Derivatives
                 for s1 in range(n_species):
                     for d1 in range(X.shape[0]):
-                        # nl[d1].update(X[d1, 0])
                         for d2 in range(d1):
                             if self.materials is not None:
                                 kappa = kappa_all[(material_id[d1], material_id[d2])]
                                 kappa11 = kappa_all[(material_id[d1], material_id[d1])]
                                 kappa22 = kappa_all[(material_id[d2], material_id[d2])]
-                                # kappa = kappa_full
                             else:
                                 kappa = kappa_full
                                 kappa11 = kappa_full
                                 kappa22 = kappa_full
-                            # self.print(kappa, material_id[d1], material_id[d2])
                             if self.verbosity > 1:
-                                # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                                # self.print('\n')
                                 self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
                                 d1 - d2 - 1) + '1 ',
                                            end='');
                                 sys.stdout.flush()
-                            # nl[d2].update(X[d2, 0])
                             if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
                                 K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
-                                # K01 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d2]), kappa, kappa).real
                                 self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]] = self.Kcross_buffer[
                                     self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
                             else:
                                 K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]]
                             if self.idx2folder[d1] not in self.Kdiag_buffer:
-                                # K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa, kappa).real
                                 K00 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d1]), kappa11,
                                                 kappa11).real
                                 self.Kdiag_buffer[self.idx2folder[d1]] = K00
                             else:
                                 K00 = self.Kdiag_buffer[self.idx2folder[d1]]
                             if self.idx2folder[d2] not in self.Kdiag_buffer:
-                                # K11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], pss[d2], kappa, kappa).real
                                 K11 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d2], pss[d2]), kappa22,
                                                 kappa22).real
                                 self.Kdiag_buffer[self.idx2folder[d2]] = K11
@@ -1571,72 +1449,6 @@ class SOAP(Kern):
                 dK_dalpha[i] += dK_dalpha[i].T
             self.dK_dalpha = dK_dalpha
             return self.Km
-        """
-        if X2 is None:
-            for i in range(X.shape[0]):
-                # load pss
-                # pss.append(self.pss_buffer[load_X[i]][1])
-                if self.verbosity > 0:
-                    self.print('\rPow. spec. {:02}/{:02}'.format(i + 1, X.shape[0]), end='');
-                    sys.stdout.flush()
-                # Load pss if available. Otherwise, calculate and save
-                nl[i].update(X[i, 0])
-                p, dp = self.get_all_power_spectrums(X[i, 0], nl[i], species, True)
-                pss.append(p)
-                dpss_dalpha.append(dp)  # self.get_all_power_spectrums(X[i, 0], nl[i], species, True)[1])
-                # print('stored:\n{}\nnew:\n{}\nderiv:\n{}\n'.format(self.pss_buffer[load_X[i]][1], p, dp))
-                for j, ll in enumerate(self.pss_buffer):
-                    try:
-                        if i == ll[1]:
-                            self.pss_buffer[j][1] = pss[-1]
-                            break
-                    except:
-                        pass
-
-            for d1 in range(X.shape[0]):
-                # nl[d1].update(X[d1, 0])
-                for d2 in range(d1):
-                    if self.verbosity > 1:
-                        # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
-                            d1 - d2 - 1) + '1 ',
-                              end='');
-                        sys.stdout.flush()
-                    # nl[d2].update(X[d2, 0])
-
-                    dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1], pss[d2], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d2], kappa, kappa).real
-                    dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d1], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1], pss[d1], kappa, kappa).real
-                    dK11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], dpss_dalpha[d2], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d2], pss[d2], kappa, kappa).real
-                    K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
-                    K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa, kappa).real
-                    K11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], pss[d2], kappa, kappa).real
-
-                    rdK00 = self.K_reduction(dK00)
-                    rdK11 = self.K_reduction(dK11)
-                    rdK01 = self.K_reduction(dK01)
-                    rK00 = self.K_reduction(K00)
-                    rK11 = self.K_reduction(K11)
-                    rK01 = self.K_reduction(K01)
-
-                    dKij = rdK01 / np.sqrt(rK00 * rK11)
-                    dKij -= 0.5 * rK01 / (rK00 * rK11) ** (1.5) * (rdK00 * rK11 + rK00 * rdK11)
-                    dKij *= self.exponent * pow(rK01 / np.sqrt(rK00 * rK11), self.exponent - 1.)
-
-                    Kij = rK01 / np.sqrt(rK00 * rK11) # pow(rK01 / np.sqrt(rK00 * rK11), self.exponent)
-
-                    dK_dalpha[d1, d2] = dKij
-                    K[d1, d2] = Kij  # self.Kij(X[d1, 0], X[d2, 0], nl[d1], nl[d2])
-            if self.verbosity > 1:
-                self.print('')
-
-            K += K.T - np.diag(K.diagonal())
-            self.Km = np.power(K, self.exponent)
-            self.dK_dalpha = dK_dalpha + dK_dalpha.T
-            return self.Km
-        """
 
         # else (X2 is not None)
         K = np.zeros((X.shape[0], X2.shape[0]))
@@ -1676,12 +1488,6 @@ class SOAP(Kern):
                         break
                 except:
                     pass
-            """
-            if self.verbosity > 1:
-                print('\rPow. spec. {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
-            nl1[i].update(X[i, 0])
-            pss.append(self.get_all_power_spectrums(X[i, 0], nl1[i], species))
-            """
 
         # TODO: TEST pss buffering for X2
         pss2 = []
@@ -1689,10 +1495,6 @@ class SOAP(Kern):
         for i in range(X2.shape[0]):
             if self.materials is not None:
                 species = material_elements[material_id2[i]]
-            # if self.verbosity > 0:
-            #     self.print('\rPow. spec. 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
-            # nl2[i].update(X2[i, 0])
-            # pss2.append(self.get_all_power_spectrums(X2[i, 0], nl2[i], species))
 
             load = -1
             # Check if pss available and choose which one to load
@@ -1720,7 +1522,6 @@ class SOAP(Kern):
 
         if False:
             for d1 in range(X.shape[0]):
-                # nl1[d1].update(X[d1, 0])
                 for d2 in range(X2.shape[0]):
                     if self.materials is not None:
                         kappa = kappa_all[(material_id[d1], material_id2[d2])]
@@ -1731,13 +1532,10 @@ class SOAP(Kern):
                         kappa11 = kappa_full
                         kappa22 = kappa_full
                     if self.verbosity > 1:
-                        # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                        # self.print('\n')
                         self.print(
                             '\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (X2.shape[0] - d2 - 1),
                             end='');
                         sys.stdout.flush()
-                    # nl2[d2].update(X2[d2, 0])
                     """
                     if self.idx2folder[d1] + self.idx2folderX2[d2] not in self.Kcross_buffer:
                         K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
@@ -1777,13 +1575,12 @@ class SOAP(Kern):
                     dKij -= 0.5 * rK01 / (rK00 * rK11) ** (1.5) * (rdK00 * rK11 + rK00 * rdK11)
                     dKij *= self.exponent * pow(rK01 / np.sqrt(rK00 * rK11), self.exponent - 1.)
 
-                    Kij = rK01 / np.sqrt(rK00 * rK11)  # pow(rK01 / np.sqrt(rK00 * rK11), self.exponent)
+                    Kij = rK01 / np.sqrt(rK00 * rK11)
 
                     dK_dalpha[d1, d2] = dKij
                     K[d1, d2] = Kij
         else:  # FIXME: multi-alpha
             for d1 in range(X.shape[0]):
-                # nl1[d1].update(X[d1, 0])
                 for d2 in range(X2.shape[0]):
                     if self.materials is not None:
                         kappa = kappa_all[(material_id[d1], material_id2[d2])]
@@ -1794,8 +1591,6 @@ class SOAP(Kern):
                         kappa11 = kappa_full
                         kappa22 = kappa_full
                     if self.verbosity > 1:
-                        # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                        # self.print('\n')
                         self.print(
                             '\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
                             X2.shape[0] - d2 - 1),
@@ -1810,13 +1605,12 @@ class SOAP(Kern):
                     rK11 = self.K_reduction(K11)
                     rK01 = self.K_reduction(K01)
 
-                    Kij = rK01 / np.sqrt(rK00 * rK11)  # pow(rK01 / np.sqrt(rK00 * rK11), self.exponent)
+                    Kij = rK01 / np.sqrt(rK00 * rK11)
 
                     K[d1, d2] = Kij
             # Derivatives
             for s1 in range(n_species):
                 for d1 in range(X.shape[0]):
-                    # nl1[d1].update(X[d1, 0])
                     for d2 in range(X2.shape[0]):
                         if self.materials is not None:
                             kappa = kappa_all[(material_id[d1], material_id2[d2])]
@@ -1827,8 +1621,6 @@ class SOAP(Kern):
                             kappa11 = kappa_full
                             kappa22 = kappa_full
                         if self.verbosity > 1:
-                            # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                            # self.print('\n')
                             self.print(
                                 '\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
                                 X2.shape[0] - d2 - 1),
@@ -1888,13 +1680,9 @@ class SOAP(Kern):
             """
             # Analytical gradient
             #self.sigma.gradient = np.sum(dL_dK * self.dK_dalpha / (-self.sigma**3))
-            #for i, a in enumerate(self.alpha):
-            #    self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha / (-self.sigma[i] ** 3))
             # FIXME: multi-alpha
             for i, a in enumerate(self.alpha):
                 self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha[i] / (-self.sigma[i] ** 3))
-            # print('dK_dsigma (a): {}'.format(self.sigma.gradient))
-            # self.sigma.gradient = None
         if not (self.optimize_exponent or self.optimize_sigma):
             pass
 
@@ -1924,86 +1712,3 @@ class SOAP(Kern):
 
     def gradients_X(self, dL_dK, X, X2=None):
         pass
-
-if __name__ == '__main__':
-    import numpy as np
-
-    from ase import Atoms
-    from ase.calculators.nwchem import NWChem
-    from ase.optimize import BFGS
-
-#    from atatutils.soap import SOAP
-
-    from numpy import cross, eye
-    from scipy.linalg import expm3, norm
-
-
-    def M(axis, theta):
-        """
-        Return the rotation matrix associated with counterclockwise rotation about
-        the given axis by theta radians.
-        """
-        axis = np.asarray(axis)
-        axis = axis/np.sqrt(np.dot(axis, axis))
-        a = np.cos(theta/2.0)
-        b, c, d = -axis*np.sin(theta/2.0)
-        aa, bb, cc, dd = a*a, b*b, c*c, d*d
-        bc, ad, ac, ab, bd, cd = b*c, a*d, a*c, a*b, b*d, c*d
-        return np.array([[aa+bb-cc-dd, 2*(bc+ad), 2*(bd-ac)],
-                         [2*(bc-ad), aa+cc-bb-dd, 2*(cd+ab)],
-                         [2*(bd+ac), 2*(cd-ab), aa+dd-bb-cc]])
-        # return expm3(cross(eye(3), axis / norm(axis) * theta))
-
-   
-    rcut = 2.
-    nmax = 10
-    alpha = 2./(0.5**2)
-    soap = SOAP(input_dim=1, sigma=0.2, r_cut=rcut, n_max=nmax, r_grid_points=50)
- 
-    h2 = Atoms('H2',
-               positions=[[0, 0, 0],
-                          [0, 0.01, 0.7]])
-    """
-    h2.calc = NWChem(xc='PBE')
-    opt = BFGS(h2)
-    opt.run(fmax=0.02)
-    """
-    angle = np.pi / 5.
-    axis = np.array([1., 0., 0.])
-    rotation = M(axis, angle)
-    h2prime = ase.Atoms('H2',
-                        positions=np.dot(rotation,
-                                         h2.positions.T).T)
-    axis = np.array([1., 1., 0.])
-    n_angles = 5
-    if n_angles == 1:
-        angle = 0.
-        rotation = M(axis, angle)
-        h2prime.positions = np.dot(rotation, h2.positions.T).T
-        print(angle/(2*np.pi))
-        print(soap.K(np.array([[miniAtoms(atoms=h2)], [miniAtoms(atoms=h2prime)]]), np.array([[miniAtoms(atoms=h2prime)]])))
-    else:
-        for n in range(n_angles):
-            angle = 2*np.pi*( n / (n_angles - 1.) )
-            rotation = M(axis, angle)
-            h2prime.positions = np.dot(rotation, h2.positions.T).T
-            print(angle/(2*np.pi))
-            print(soap.K(np.array([[miniAtoms(atoms=h2)], [miniAtoms(atoms=h2prime)]]), np.array([[miniAtoms(atoms=h2prime)]])))  # , soap.kold(h2, h2prime)
-
-    axis = np.array([1., 1., 0.])
-    n_stretches = 5
-    max_stretch = 0.1
-    if n_stretches == 1:
-        h2prime.positions = np.dot(np.eye(3), h2.positions.T).T
-        print(angle/(2*np.pi))
-        print(soap.K(np.array([[miniAtoms(atoms=h2)]]), np.array([[miniAtoms(atoms=h2prime)], [miniAtoms(atoms=h2)]])))
-    else:
-        for n in range(n_stretches):
-            s = max_stretch*(n/(n_stretches - 1.))
-            stretch = np.array([[1., 0., 0.],
-                                [0., 1. + s, 0.],
-                                [0., 0., 1. + s]])
-            h2prime.positions = np.dot(stretch, h2.positions.T).T
-            print(s)
-            print(soap.K(np.array([[miniAtoms(atoms=h2)]]), np.array([[miniAtoms(atoms=h2prime)], [miniAtoms(atoms=h2)]])))  #, soap.kold(h2, h2prime))
-
