@@ -21,7 +21,7 @@ import ase
 import ase.neighborlist
 
 from atatutils.str2gpaw import ATAT2GPAW
-from exp_spherical_in import exp_spherical_in, exp_spherical_in_test
+from exp_spherical_in import exp_spherical_in
 
 
 def gregory_weights(n_nodes, h, order):
@@ -172,12 +172,7 @@ def iv(n, x):
 
 
 def exp_iv(y, n, x):
-    # return np.asarray(cexp_spherical_in(y, n, x))
     return exp_spherical_in(y, n, x)
-
-
-def exp_iv_test(y, n, x):
-    return exp_spherical_in_test(y, n, x, 1)
 
 
 def c_ilm(l, m, alpha, ri, thetai, phii, x, derivative=False):
