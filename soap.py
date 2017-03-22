@@ -21,7 +21,7 @@ import ase
 import ase.neighborlist
 
 from atatutils.str2gpaw import ATAT2GPAW
-from exp_spherical_in import exp_spherical_in, exp_spherical_in_test, cexp_spherical_in
+from exp_spherical_in import exp_spherical_in, exp_spherical_in_test
 
 
 def gregory_weights(n_nodes, h, order):
@@ -84,7 +84,6 @@ def basis_overlap(nmax, rcut, alpha):
             T1 -= c1 * np.exp(-alpha*(2*rcut**2 + ri**2 + rj**2 - 2*rcut*(ri+rj))) * (2*rcut + ri + rj)
             T2 = c2 * np.exp(-alpha/2.*(ri-rj)**2) * (1. + alpha*(ri + rj)**2) * \
                 (sp.erf(np.sqrt(alpha/2) * (2*rcut - ri - rj)) + sp.erf(np.sqrt(alpha/2) * (ri + rj)))
-            # print(ri, rj, T1, T2)
             overlap[i, j] = overlap[j, i] = T1 + T2
     return overlap
 
@@ -106,7 +105,6 @@ def sympy_basis_overlap(nmax, rcut):
             2 * rcut + ri + rj)
             T2 = c2 * exp(-a / 2. * (ri - rj) ** 2) * (1. + a * (ri + rj) ** 2) * \
                  (erf(sqrt(a / 2) * (2 * rcut - ri - rj)) + erf(sqrt(a / 2) * (ri + rj)))
-            # print(ri, rj, T1, T2)
             overlap[i][j] = overlap[j][i] = T1 + T2
     overlap = Matrix(overlap)
     return overlap
@@ -177,33 +175,17 @@ def exp_iv(y, n, x):
     # return np.asarray(cexp_spherical_in(y, n, x))
     return exp_spherical_in(y, n, x)
 
+
 def exp_iv_test(y, n, x):
     return exp_spherical_in_test(y, n, x, 1)
-    #return exp_spherical_in(y, n, x)
 
 
 def c_ilm(l, m, alpha, ri, thetai, phii, x, derivative=False):
-    #I_01 = 4 * np.pi * np.exp(-alpha * (x*x + ri*ri)) * \
-    #    iv(l, 2 * alpha * x * ri) * \
-    #    np.conj(sp.sph_harm(m, l, thetai, phii))
     I_01 = 4 * np.pi * exp_iv(-alpha * (x*x + ri*ri), l, 2 * alpha * x * ri) * np.conj(sp.sph_harm(m, l, thetai, phii))
     if derivative:
         dI_01 = I_01 * (l / alpha - (x*x + ri*ri))
         dI_01 += 8 * np.pi * x * ri * exp_iv(-alpha * (x*x + ri*ri), l + 1, 2 * alpha * x * ri) * \
                  np.conj(sp.sph_harm(m, l, thetai, phii))
-        # numerical
-        #delta = 0.001
-        #Ip = 4 * np.pi * exp_iv(-(alpha + delta) * (x*x + ri*ri), l, 2 * (alpha + delta) * x * ri) * \
-        #np.conj(sp.sph_harm(m, l, thetai, phii))
-        #Im = 4 * np.pi * exp_iv(-(alpha - delta) * (x*x + ri*ri), l, 2 * (alpha - delta) * x * ri) * \
-        #np.conj(sp.sph_harm(m, l, thetai, phii))
-        #dI_01n = (Ip - Im)/(2*delta)
-        #idx = 2
-        #if I_01[idx].real > 1.:
-        #    print('exp_iv: ', alpha, dI_01[idx].real, dI_01n[idx].real, Ip[idx].real, Im[idx].real, I_01[idx].real)
-    # print np.conj(sp.sph_harm(m, l, thetai, phii))
-    # print( 'prefactor iv = ',  -alpha * (x[-1]**2 + ri*ri), l, 2 * alpha * x[-1] * ri, np.exp(-alpha * (x[-1]**2 + ri*ri))*iv(l, 2 * alpha * x[-1] * ri), exp_iv(-alpha * (x[-1]**2 + ri*ri), l, 2 * alpha * x[-1] * ri) )
-    #print(I_01[-1].real, I_01_new[-1].real, 100.*np.max((I_01.real-I_01_new.real)/(I_01.real+1.e-15)))
     if derivative:
         return I_01, dI_01
     return I_01
