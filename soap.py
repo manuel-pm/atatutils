@@ -266,12 +266,18 @@ def partition_ltri_rows(nrows, rank, size):
     ndata = nrows * (nrows + 1) / 2
     base = ndata / size
     offsets = np.zeros(size, dtype=int)
+
     for i in range(1, size):
+        inside = False
         prev = offsets[i - 1]
-        for j in range(prev, nrows):
+        for j in range(prev + 1, nrows):
             if j * (j + 1) / 2 - prev * (prev + 1) / 2 > base:
                 offsets[i] = j
+                inside = True
                 break
+        if not inside:
+            offsets[i] = nrows
+            print('WARNING: too many processes for the size of the matrix')
     chunksizes = np.ones(size, dtype=int)
     chunksizes[:-1] = offsets[1:] - offsets[:-1]
     chunksizes[-1] = nrows - offsets[-1]
@@ -634,16 +640,16 @@ class SOAP(Kern):
         c_nlm = np.empty((n_species, self.n_max, self.l_max*self.l_max), dtype=complex)
         if derivative:
             dc_nlm = np.ones((n_species, self.n_max, self.l_max * self.l_max), dtype=complex)
-            dpspectrum = np.empty((n_species, n_species, self.n_max, self.n_max, self.l_max), dtype=complex)
-            # dpspectrum = np.empty((n_species, n_species, n_species, self.n_max, self.n_max, self.l_max), dtype=complex) # FIXME: multi-alpha
+            # dpspectrum = np.empty((n_species, n_species, self.n_max, self.n_max, self.l_max), dtype=complex)
+            dpspectrum = np.empty((n_species, n_species, n_species, self.n_max, self.n_max, self.l_max), dtype=complex) # FIXME: multi-alpha
         for i in range(n_species):
             satoms = copy.deepcopy(atoms)
             # to_delete = [n for (n, atom) in enumerate(satoms) if atom.numbers[0]!=species[i]]
             del satoms[[n for (n, atom) in enumerate(satoms) if atom.numbers[0]!=species[i]]]
             # TODO: Choose atom dependent alpha here
             # FIXME: multi-alpha
-            # alpha = self.alphas[i]
-            alpha = self.alpha
+            alpha = self.alpha[i]
+            # alpha = self.alpha
             if derivative:
                 c, dc =  self.get_cnlm(satoms, derivative, alpha=alpha)
                 dc_nlm[i] = dc.reshape((self.n_max, self.l_max*self.l_max))
@@ -663,6 +669,7 @@ class SOAP(Kern):
                             #    np.dot(c_nlm[s1, i, l * l: l * l + 2 * l + 1],
                             #           np.conj(c_nlm[s2, j, l * l: l * l + 2 * l + 1])) / np.sqrt(2 * l + 1)
         if derivative:
+            """
             for s1 in range(n_species):
                 for s2 in range(n_species):
                     for i in range(self.n_max):
@@ -678,8 +685,9 @@ class SOAP(Kern):
                                 #           np.conj(c_nlm[s2, j, l * l: l * l + 2 * l + 1])) / np.sqrt(2 * l + 1) + \
                                 #    np.dot(c_nlm[s1, i, l * l: l * l + 2 * l + 1],
                                 #           np.conj(dc_nlm[s2, j, l * l: l * l + 2 * l + 1])) / np.sqrt(2 * l + 1)
-            # FIXME: multi-alpha
             """
+            # FIXME: multi-alpha
+
             for s0 in range(n_species):
                 for s1 in range(n_species):
                     for s2 in range(n_species):
@@ -702,15 +710,16 @@ class SOAP(Kern):
                                                     c_nlm[s1, i, l * l: l * l + 2 * l + 1]) / np.sqrt(2 * l + 1)
                                     else:
                                         dpspectrum[s0, s1, s2, i, j, l] = 0.
-            """
+
 
             # print(c_nlm[:, :, 0], dc_nlm[:, :, 0])
-            return (pspectrum.reshape((n_species, n_species, self.n_max*self.n_max*self.l_max)) * np.sqrt(8*np.pi**2),
-                    dpspectrum.reshape((n_species, n_species, self.n_max*self.n_max*self.l_max)) * np.sqrt(8*np.pi**2))
-            # return (pspectrum.reshape((n_species, n_species, self.n_max * self.n_max * self.l_max)) * \
-            #         np.sqrt(8 * np.pi ** 2),
-            #         dpspectrum.reshape((n_species, n_species, n_species, self.n_max * self.n_max * self.l_max)) * \
-            #         np.sqrt(8 * np.pi ** 2))
+            #return (pspectrum.reshape((n_species, n_species, self.n_max*self.n_max*self.l_max)) * np.sqrt(8*np.pi**2),
+            #        dpspectrum.reshape((n_species, n_species, self.n_max*self.n_max*self.l_max)) * np.sqrt(8*np.pi**2))
+            # FIXME: multi-alpha
+            return (pspectrum.reshape((n_species, n_species, self.n_max * self.n_max * self.l_max)) * \
+                    np.sqrt(8 * np.pi ** 2),
+                    dpspectrum.reshape((n_species, n_species, n_species, self.n_max * self.n_max * self.l_max)) * \
+                    np.sqrt(8 * np.pi ** 2))
         return pspectrum.reshape((n_species, n_species, self.n_max*self.n_max*self.l_max)) * np.sqrt(8*np.pi**2)
 
 
@@ -796,8 +805,8 @@ class SOAP(Kern):
             nl = ase.neighborlist.NeighborList(n*[self.r_cut/1.99], skin=0., self_interaction=False, bothways=True)
             nl.update(atoms)
         if derivative:
-            dp = np.empty((n, n_species, n_species, self.n_max * self.n_max * self.l_max), dtype=complex)
-            # dp = np.empty((n, n_species, n_species, n_species, self.n_max * self.n_max * self.l_max), dtype=complex) # FIXME: multi-alpha
+            # dp = np.empty((n, n_species, n_species, self.n_max * self.n_max * self.l_max), dtype=complex)
+            dp = np.empty((n, n_species, n_species, n_species, self.n_max * self.n_max * self.l_max), dtype=complex) # FIXME: multi-alpha
         p = np.empty((n, n_species, n_species, self.n_max * self.n_max * self.l_max), dtype=complex)
 
         for i in range(n):
@@ -1084,6 +1093,7 @@ class SOAP(Kern):
                 rank = comm.Get_rank()
 
                 chunk, chunksizes, offsets = partition_ltri_rows(X.shape[0], rank, size)
+                self.print(chunk, chunksizes, offsets)
                 Klocal = np.zeros((chunksizes[rank], X.shape[0]))
                 for i in range(chunk[0], chunk[1]):
                     Klocal[i - offsets[rank], i] = 1.
@@ -1300,225 +1310,6 @@ class SOAP(Kern):
     def Kdiag(self, X):
         return np.ones(X.shape[0])
 
-    #@Cache_this(limit=3, ignore_args=(0,))
-    def dK_dsigma(self, X, X2=None):
-
-        X_shape = X.shape[0]
-        if X2 is not None:
-            X2_shape = X2.shape[0]
-        else:
-            X2_shape = X.shape[0]
-            #X2 = X.copy()
-        K = np.empty((X_shape, X2_shape))
-
-        if self.parallel_data:
-            from mpi4py import MPI
-            comm = MPI.COMM_WORLD
-            size = comm.Get_size()
-            rank = comm.Get_rank()
-
-            chunk, chunksizes, offsets = partition1d(X.shape[0], rank, size)
-
-            X = X[chunk[0]: chunk[1], :]
-
-        load_X = []
-        load_X2 = []
-        # if self.do_pss_buffer:
-        # Mark inputs for loading pss.
-        for j, X_i in enumerate(X[:, 0]):
-            for i, (X_old, pss_old) in enumerate(self.pss_buffer):
-                if np.array(X_i, dtype=X_old.dtype) == X_old:
-                    load_X.append(i)
-                    break
-
-        if X.dtype.kind == 'f':
-            X = np.asarray(abs(np.asarray(X, dtype=int)), dtype=str)
-        if X.dtype.kind == 'S':
-            tmp = np.empty(X.shape, dtype=ase.Atoms)
-            for i, folder in enumerate(X[:, 0]):
-                tmp[i, 0] = ATAT2GPAW(os.path.join(folder, self.structure_file)).get_atoms()
-            X = tmp
-
-        # TODO: TEST buffering of X2
-        if X2 is not None:
-            for j, X2_i in enumerate(X2[:, 0]):
-                save_X = True
-                for i, (X_old, pss_old) in enumerate(self.pss_buffer):
-                    if np.array(X2_i, dtype=X_old.dtype) == X_old:
-                        load_X2.append(i)
-                        break
-
-            if X2.dtype.kind == 'f':
-                X2 = np.asarray(abs(np.asarray(X2, dtype=int)), dtype=str)
-            if X2.dtype.kind == 'S':
-                tmp = np.empty(X2.shape, dtype=ase.Atoms)
-                for i, folder in enumerate(X2[:, 0]):
-                    tmp[i, 0] = ATAT2GPAW(os.path.join(folder, self.structure_file)).get_atoms()
-                X2 = tmp
-
-        if self.parallel_data:
-            Klocal = self._dK_dsigma(X, X2, load_X, load_X2)
-            comm.Allgatherv(Klocal, [K, chunksizes * X2_shape, offsets * X2_shape, MPI.DOUBLE])
-        else:
-            K = self._dK_dsigma(X, X2, load_X, load_X2)
-
-        return K
-        # return self._K(X, X2, load_X, load_X2)
-
-    def _dK_dsigma(self, X, X2, load_X, load_X2):
-        # self.n_eval += 1
-
-        if self.multi_atom:
-            species = []
-            for atoms in X[:, 0]:
-                species += list(atoms.numbers)
-            if X2 is not None:
-                for atoms in X2[:, 0]:
-                    species += list(atoms.numbers)
-            species = list(set(species))
-            species.sort()
-            n_species = len(species)
-            kappa = np.empty((n_species, n_species))
-            for s1 in range(n_species):
-                for s2 in range(n_species):
-                    kappa[s1, s2] = self.similarity(species[s1], species[s2])
-        else:
-            species = None
-            n_species = 1
-            kappa = np.array([[1.]])
-
-        if X2 is None:
-            dK_dsigma = np.zeros((X.shape[0], X.shape[0]))
-            nl = []
-            for d in range(X.shape[0]):
-                nl.append(ase.neighborlist.NeighborList(X[d, 0].positions.shape[0] * [self.r_cut / 1.99],
-                                                        skin=0., self_interaction=False, bothways=True))
-
-            dpss_dsigma = []
-            pss = []
-            for i in range(X.shape[0]):
-                # load pss
-                #pss.append(self.pss_buffer[load_X[i]][1])
-                if self.verbosity > 0:
-                    self.print('\rPow. spec. {:02}/{:02}'.format(i + 1, X.shape[0]), end='');
-                    sys.stdout.flush()
-                # Load pss if available. Otherwise, calculate and save
-                nl[i].update(X[i, 0])
-                p, dp = self.get_all_power_spectrums(X[i, 0], nl[i], species, True)
-                pss.append(p)
-                dpss_dsigma.append(dp)  #self.get_all_power_spectrums(X[i, 0], nl[i], species, True)[1])
-                # print('stored:\n{}\nnew:\n{}\nderiv:\n{}\n'.format(self.pss_buffer[load_X[i]][1], p, dp))
-
-
-            for d1 in range(X.shape[0]):
-                # nl[d1].update(X[d1, 0])
-                for d2 in range(d1):
-                    if self.verbosity > 1:
-                        # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
-                        d1 - d2 - 1) + '1 ',
-                              end='');
-                        sys.stdout.flush()
-                    # nl[d2].update(X[d2, 0])
-
-                    dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1], pss[d2], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma[d2], kappa, kappa).real
-                    dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma[d1], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1], pss[d1], kappa, kappa).real
-                    dK11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], dpss_dsigma[d2], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d2], pss[d2], kappa, kappa).real
-                    K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
-                    K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa, kappa).real
-                    K11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], pss[d2], kappa, kappa).real
-
-                    rdK00 = self.K_reduction(dK00)
-                    rdK11 = self.K_reduction(dK11)
-                    rdK01 = self.K_reduction(dK01)
-                    rK00 = self.K_reduction(K00)
-                    rK11 = self.K_reduction(K11)
-                    rK01 = self.K_reduction(K01)
-
-                    dKij = rdK01 / np.sqrt(rK00 * rK11)
-                    dKij -= 0.5 * rK01 / (rK00 * rK11) ** (1.5) * (rdK00 * rK11 + rK00 * rdK11)
-                    dKij *= self.exponent * pow(rK01 / np.sqrt(rK00 * rK11), self.exponent - 1.)
-
-                    dK_dsigma[d1, d2] = dKij  # self.Kij(X[d1, 0], X[d2, 0], nl[d1], nl[d2])
-            if self.verbosity > 1:
-                self.print('', end='\r')
-            return dK_dsigma + dK_dsigma.T
-
-        # else (X2 is not None)
-        dK_dsigma = np.zeros((X.shape[0], X2.shape[0]))
-        nl1 = []
-        for d1 in range(X.shape[0]):
-            nl1.append(ase.neighborlist.NeighborList(X[d1, 0].positions.shape[0] * [self.r_cut / 1.99],
-                                                     skin=0., self_interaction=False, bothways=True))
-        nl2 = []
-        for d2 in range(X2.shape[0]):
-            nl2.append(ase.neighborlist.NeighborList(X2[d2, 0].positions.shape[0] * [self.r_cut / 1.99],
-                                                     skin=0., self_interaction=False, bothways=True))
-
-        pss = []
-        dpss_dsigma = []
-        for i in range(X.shape[0]):
-            # load pss
-            pss.append(self.pss_buffer[load_X[i]][1])
-            if self.verbosity > 0:
-                self.print('\rPow. spec. 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end='')
-                sys.stdout.flush()
-            nl1[i].update(X[i, 0])
-            dpss_dsigma.append(self.get_all_power_spectrums(X[i, 0], nl1[i], species))
-
-        pss2 = []
-        dpss_dsigma2 = []
-        for i in range(X2.shape[0]):
-            # load pss
-            pss.append(self.pss_buffer[load_X2[i]][1])
-            if self.verbosity > 0:
-                self.print('\rPow. spec. 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end='');
-                sys.stdout.flush()
-            nl2[i].update(X2[i, 0])
-            dpss_dsigma2.append(self.get_all_power_spectrums(X2[i, 0], nl2[i], species))
-
-
-        for d1 in range(X.shape[0]):
-            # nl1[d1].update(X[d1, 0])
-            for d2 in range(X2.shape[0]):
-                if self.verbosity > 1:
-                    # print('\rElement ({0:02} {1:02}) / ({2:02} {3:02})'.format(d1 + 1, d2 + 1, X.shape[0], X.shape[0] - 1), end=''); sys.stdout.flush()
-                    self.print(
-                        '\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (X2.shape[0] - d2 - 1),
-                        end='')
-                    sys.stdout.flush()
-                # nl2[d2].update(X2[d2, 0])
-                dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1], pss2[d2], kappa, kappa).real + \
-                       np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma2[d2], kappa, kappa).real
-                dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma[d1], kappa, kappa).real + \
-                       np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1], pss[d1], kappa, kappa).real
-                dK11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], dpss_dsigma2[d2], kappa, kappa).real + \
-                       np.einsum('ijkl, mnol, jn, ko', dpss_dsigma2[d2], pss2[d2], kappa, kappa).real
-                K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
-                K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa, kappa).real
-                K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa, kappa).real
-
-                rdK00 = self.K_reduction(dK00)
-                rdK11 = self.K_reduction(dK11)
-                rdK01 = self.K_reduction(dK01)
-                rK00 = self.K_reduction(K00)
-                rK11 = self.K_reduction(K11)
-                rK01 = self.K_reduction(K01)
-
-                dKij = rdK01 / np.sqrt(rK00 * rK11)
-                dKij -= 0.5 * rK01 / (rK00 * rK11)**(1.5) * (rdK00 * rK11 + rK00 * rdK11)
-                dKij *= self.exponent * pow(rK01 / np.sqrt(rK00 * rK11), self.exponent - 1.)
-
-                dK_dsigma[d1, d2] = dKij  # self.Kij(X[d1, 0], X[d2, 0], nl[d1], nl[d2])
-                # K[d1, d2] = self.Kij(X[d1, 0], X2[d2, 0], nl1[d1], nl2[d2])
-        if self.verbosity > 1:
-            self.print('')
-
-        return dK_dsigma
-
     def _K_dK(self, X, X2, load_X, load_X2, material_id, material_id2):
 
         self.n_eval += 2
@@ -1562,8 +1353,8 @@ class SOAP(Kern):
 
         if X2 is None:
             K = np.eye(X.shape[0])
-            dK_dalpha = np.zeros((X.shape[0], X.shape[0]))
-            # dK_dalpha = np.zeros((n_species, X.shape[0], X.shape[0])) # FIXME: multi-alpha
+            # dK_dalpha = np.zeros((X.shape[0], X.shape[0]))
+            dK_dalpha = np.zeros((n_species, X.shape[0], X.shape[0])) # FIXME: multi-alpha
             nl = []
             for d in range(X.shape[0]):
                 nl.append(ase.neighborlist.NeighborList(X[d, 0].positions.shape[0] * [self.r_cut / 1.99],
@@ -1587,7 +1378,7 @@ class SOAP(Kern):
                     except:
                         pass
 
-            if True:
+            if False:
                 for d1 in range(X.shape[0]):
                     # nl[d1].update(X[d1, 0])
                     for d2 in range(d1):
@@ -1749,12 +1540,12 @@ class SOAP(Kern):
                             else:
                                 K11 = self.Kdiag_buffer[self.idx2folder[d2]]
 
-                            dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][s1], pss[d2], kappa, kappa).real + \
-                                   np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d2][s1], kappa, kappa).real
-                            dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d1][s1], kappa11, kappa11).real + \
-                                   np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][s1], pss[d1], kappa11, kappa11).real
-                            dK11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], dpss_dalpha[d2][s1], kappa22, kappa22).real + \
-                                   np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d2][s1], pss[d2], kappa22, kappa22).real
+                            dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss[d2], kappa, kappa).real + \
+                                   np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d2][:, s1], kappa, kappa).real
+                            dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d1][:, s1], kappa11, kappa11).real + \
+                                   np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss[d1], kappa11, kappa11).real
+                            dK11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], dpss_dalpha[d2][:, s1], kappa22, kappa22).real + \
+                                   np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d2][:, s1], pss[d2], kappa22, kappa22).real
 
                             rdK00 = self.K_reduction(dK00)
                             rdK11 = self.K_reduction(dK11)
@@ -1774,11 +1565,11 @@ class SOAP(Kern):
 
             K += K.T - np.diag(K.diagonal())
             self.Km = np.power(K, self.exponent)
-            self.dK_dalpha = dK_dalpha + dK_dalpha.T
+            # self.dK_dalpha = dK_dalpha + dK_dalpha.T
             # FIXME: multi-alpha
-            #for i in range(dK_dalpha.shape[0]):
-            #    dK_dalpha[i] += dK_dalpha[i].T
-            #self.dK_dalpha = dK_dalpha
+            for i in range(dK_dalpha.shape[0]):
+                dK_dalpha[i] += dK_dalpha[i].T
+            self.dK_dalpha = dK_dalpha
             return self.Km
         """
         if X2 is None:
@@ -1927,7 +1718,7 @@ class SOAP(Kern):
         if self.verbosity > 0:
             self.print('', end='\r')
 
-        if True:
+        if False:
             for d1 in range(X.shape[0]):
                 # nl1[d1].update(X[d1, 0])
                 for d2 in range(X2.shape[0]):
@@ -1968,12 +1759,12 @@ class SOAP(Kern):
                     K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
                     K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa11, kappa11).real
                     K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa22, kappa22).real
-                    dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1], pss2[d2], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma2[d2], kappa, kappa).real
-                    dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma[d1], kappa11, kappa11).real + \
-                           np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1], pss[d1], kappa11, kappa11).real
-                    dK11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], dpss_dsigma2[d2], kappa22, kappa22).real + \
-                           np.einsum('ijkl, mnol, jn, ko', dpss_dsigma2[d2], pss2[d2], kappa22, kappa22).real
+                    dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1], pss2[d2], kappa, kappa).real + \
+                           np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss2_dalpha[d2], kappa, kappa).real
+                    dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d1], kappa11, kappa11).real + \
+                           np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1], pss[d1], kappa11, kappa11).real
+                    dK11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], dpss2_dalpha[d2], kappa22, kappa22).real + \
+                           np.einsum('ijkl, mnol, jn, ko', dpss2_dalpha[d2], pss2[d2], kappa22, kappa22).real
 
                     rdK00 = self.K_reduction(dK00)
                     rdK11 = self.K_reduction(dK11)
@@ -2047,12 +1838,12 @@ class SOAP(Kern):
                         K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
                         K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa11, kappa11).real
                         K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa22, kappa22).real
-                        dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1][s1], pss2[d2], kappa, kappa).real + \
-                               np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma2[d2][s1], kappa, kappa).real
-                        dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma[d1][s1], kappa11, kappa11).real + \
-                               np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1][s1], pss[d1], kappa11, kappa11).real
-                        dK11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], dpss_dsigma2[d2][s1], kappa22, kappa22).real + \
-                               np.einsum('ijkl, mnol, jn, ko', dpss_dsigma2[d2][s1], pss2[d2], kappa22, kappa22).real
+                        dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1][:, s1], pss2[d2], kappa, kappa).real + \
+                               np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma2[d2][:, s1], kappa, kappa).real
+                        dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma[d1][:, s1], kappa11, kappa11).real + \
+                               np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1][:, s1], pss[d1], kappa11, kappa11).real
+                        dK11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], dpss_dsigma2[d2][:, s1], kappa22, kappa22).real + \
+                               np.einsum('ijkl, mnol, jn, ko', dpss_dsigma2[d2][:, s1], pss2[d2], kappa22, kappa22).real
 
                         rdK00 = self.K_reduction(dK00)
                         rdK11 = self.K_reduction(dK11)
@@ -2071,11 +1862,11 @@ class SOAP(Kern):
             self.print('')
 
         self.Km = np.power(K, self.exponent)
-        self.dK_dalpha = dK_dalpha + dK_dalpha.T
+        #self.dK_dalpha = dK_dalpha + dK_dalpha.T
         # FIXME: multi-alpha
-        #for i in range(dK_dalpha.shape[0]):
-        #    dK_dalpha[i] += dK_dalpha[i].T
-        #self.dK_dalpha = dK_dalpha
+        for i in range(dK_dalpha.shape[0]):
+            dK_dalpha[i] += dK_dalpha[i].T
+        self.dK_dalpha = dK_dalpha
         return self.Km
 
     def update_gradients_full(self, dL_dK, X, X2):
@@ -2097,11 +1888,11 @@ class SOAP(Kern):
             """
             # Analytical gradient
             #self.sigma.gradient = np.sum(dL_dK * self.dK_dalpha / (-self.sigma**3))
-            for i, a in enumerate(self.alpha):
-                self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha / (-self.sigma[i] ** 3))
+            #for i, a in enumerate(self.alpha):
+            #    self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha / (-self.sigma[i] ** 3))
             # FIXME: multi-alpha
-            # for i, a in enumerate(self.alpha):
-            #     self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha[i] / (-self.sigma[i] ** 3))
+            for i, a in enumerate(self.alpha):
+                self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha[i] / (-self.sigma[i] ** 3))
             # print('dK_dsigma (a): {}'.format(self.sigma.gradient))
             # self.sigma.gradient = None
         if not (self.optimize_exponent or self.optimize_sigma):
