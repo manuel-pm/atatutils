@@ -213,7 +213,7 @@ def c_ilm2(l, m, alpha, ar2g2, thetai, phii, arg, derivative=False):
     I_01 = 4 * np.pi * exp_iv(-ar2g2, l, arg) * np.conj(sp.sph_harm(m, l, thetai, phii))
     if derivative:
         dI_01 = I_01 * ((l - ar2g2) / alpha)
-        dI_01 += 8 * np.pi * arg / alpha * exp_iv(-ar2g2, l + 1, arg) * \
+        dI_01 += 4 * np.pi * arg / alpha * exp_iv(-ar2g2, l + 1, arg) * \
                  np.conj(sp.sph_harm(m, l, thetai, phii))
     if derivative:
         return I_01, dI_01
