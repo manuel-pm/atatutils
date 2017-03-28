@@ -241,6 +241,35 @@ def partition1d(ndata, rank, size):
 
 
 def partition_ltri_rows(nrows, rank, size):
+    """Partitions a matrix assuming the cost of the partitioned
+    computation depends only on the elements of the lower triangular part.
+
+    Parameters
+    ----------
+    nrows : int > 0
+        Number of rows of the matrix.
+    rank : int >=0
+        Rank (id) of the process.
+    size : int >=0
+        Number of processes.
+
+    Returns
+    -------
+    lchunk : list of 2 int
+        Indices (first and one past last) of the chunk for process rank.
+    chunksizes : 1-D ndarray of int
+        Size (in rows) of all the chunks.
+    offsets : 1-D ndarray of int
+        Offsets (in rows) of all the chunks.
+
+    Notes
+    -----
+    The algorithm only partitions in rows, so a perfect balancing is not possible.
+    This is motivated by the case where each row represents a data point so that
+    we just distribute data points.
+
+    """
+    # TODO: Consider the case where we partition the memory of the 2-D array directly.
     ndata = nrows * (nrows + 1) / 2
     base = ndata / size
     offsets = np.zeros(size, dtype=int)
@@ -265,6 +294,35 @@ def partition_ltri_rows(nrows, rank, size):
 
 
 def partition_utri_rows(nrows, rank, size):
+    """Partitions a matrix assuming the cost of the partitioned
+    computation depends only on the elements of the upper triangular part.
+
+    Parameters
+    ----------
+    nrows : int > 0
+        Number of rows of the matrix.
+    rank : int >=0
+        Rank (id) of the process.
+    size : int >=0
+        Number of processes.
+
+    Returns
+    -------
+    lchunk : list of 2 int
+        Indices (first and one past last) of the chunk for process rank.
+    chunksizes : 1-D ndarray of int
+        Size (in rows) of all the chunks.
+    offsets : 1-D ndarray of int
+        Offsets (in rows) of all the chunks.
+
+    Notes
+    -----
+    The algorithm only partitions in rows, so a perfect balancing is not possible.
+    This is motivated by the case where each row represents a data point so that
+    we just distribute data points.
+
+    """
+    # TODO: Consider the case where we partition the memory of the 2-D array directly.
     ndata = nrows * (nrows + 1) / 2
     base = ndata / size
     offsets = np.zeros(size, dtype=int)
@@ -337,11 +395,7 @@ class miniAtoms(object):
 
 
 class SOAP(Kern):
-    r"""Implementation of the SOAP kernel as a GPy kernel
-
-    The SOAP kernel is described in:
-    A. P. Bart\'ok, R. Kondor, G. Cs\'anyi. On representing chemical environments.
-    Physical Review B, 87(18), 184115 (2013). http://doi.org/10.1103/PhysRevB.87.184115
+    r"""Implementation of the SOAP kernel as a GPy kernel as described in [1]_, [2]_.
 
     Attributes
     ----------
@@ -363,6 +417,8 @@ class SOAP(Kern):
         Path to the folder containing the data of the materials for the model.
     n_max : int > 0
         Maximum order in the radial expansion of the pseudo-density.
+    num_diff : bool
+        Determines if the derivatives are approximated numerically
     optimize_sigma : bool
         Determines if the gradient of sigma is calculated for its optimization.
     parallel_cnlm : bool
@@ -383,7 +439,7 @@ class SOAP(Kern):
         Standard deviation of the Gaussians representing the pseudo-density of
          each type of atom.
 
-    Parameters (if not in Attributes)
+    Parameters
     ----------
     similarity : function
         Function which returns the similarity between elements of given atomic numbers.
@@ -403,11 +459,19 @@ class SOAP(Kern):
         Order of the numerical quadrature for radial integration if using Gregory quadrature.
     quadrature_type : str
         Type of numerical scheme for radial quadrature.
+
+    References
+    ----------
+    .. [1] A. P. Bart\'ok, R. Kondor, G. Cs\'anyi, *On representing chemical environments*.
+        Physical Review B, 87(18), 184115 (2013). http://doi.org/10.1103/PhysRevB.87.184115
+    .. [2] W. J. Szlachta, *First principles interatomic potential for tungsten based on Gaussian process regression.*
+        University of Cambridge (September 2013). http://arxiv.org/abs/1403.3291
+
     """
     def __init__(self, input_dim, sigma=1., r_cut=5., l_max=10, n_max=10, exponent=1, r_grid_points=None,
                  similarity=None, multi_atom=False, verbosity=0, structure_file='str_relax.out',
                  parallel=None, optimize_sigma=True, optimize_exponent=False, use_pss_buffer=True,
-                 quadrature_order=2, quadrature_type='gauss-legendre', materials=None, elements=None):
+                 quadrature_order=2, quadrature_type='gauss-legendre', materials=None, elements=None, num_diff=False):
         super(SOAP, self).__init__(input_dim, [0],  'SOAP')
         self.alpha = 1. / (2 * sigma**2)  # alpha = 2./(0.5**2) ? Check
         self.r_cut = r_cut
@@ -451,6 +515,7 @@ class SOAP(Kern):
 
         self.optimize_sigma = optimize_sigma
         self.derivative = False
+        self.num_diff = num_diff
 
         sigma = np.array(sigma)
         self.sigma = Param('sigma', sigma)  #, Logistic(0.2, 2.2))  # Logexp())
@@ -477,6 +542,13 @@ class SOAP(Kern):
         self.print('{} evaluations of kernel performed'.format(self.n_eval))
 
     def set_r_grid(self, n_points=None):
+        """Creates a radial grid for numerical integration and calls self.update_G.
+
+        Parameters
+        ----------
+        n_points : int >= 0, optional
+            Number of points in the radial grid (defaults to self.n_max)
+        """
         if n_points is None:
             self.r_grid = np.array([self.delta_r*i for i in range(self.n_max)])
         else:
@@ -484,6 +556,18 @@ class SOAP(Kern):
         self.update_G()
 
     def update_G(self):
+        r"""Creates an set of orthonormal radial basis functions G as well as an array Gr2dr
+        to facilitate radial integration.
+
+        Notes
+        -----
+        Starting with a set of equispaced Gaussians :math:`\phi_k(x)`, their overlap matrix
+        and its Cholesky decomposition :math:`LL^T` are calculated. The orthonormal
+        basis functions are then :math:`g_n(x) = \sum_k L^{-T}_{kn} \phi_k(x)`
+        Finally, we define self.Gr2dr as :math:`g_n(r)*r^2` (at :math:`r=`self.r_grid) such that
+        np.dot(self.Gr2dr[n, :], f[:]) approximates :math:`\int_0^{r_c}r^2 \g_n(r)f(r)\,dr`
+
+        """
         order = self.quad_order
         inner_product_mode = self.quad_type  # 'gauss-legendre', 'romberg', 'gregory'
         # n_max Gaussian basis functions evaluated at r_grid
@@ -540,6 +624,25 @@ class SOAP(Kern):
         self.Gr2dr = np.einsum('ij, j -> ij', G, self.r2dr)
 
     def compute_weights(self, r_nodes, delta_r, order, type='gregory'):
+        """Compute quadrature weights.
+
+        Parameters
+        ----------
+        r_nodes : int > 0
+            number of nodes
+        delta_r : float > 0
+            mesh spacing
+        order : int > 0
+            quadrature order
+        type : str
+            quadrature type
+
+        Returns
+        -------
+        array of float
+            weight vector
+
+        """
         if type=='gregory':
             w = gregory_weights(r_nodes, delta_r, order)
         else:
@@ -547,13 +650,52 @@ class SOAP(Kern):
         return w
 
     def inner_product(self, u, v, romberg=False):
-        # Given weigths and r grid, \int r^2 u(r) v(r) \,dr \approx \Delta r \sum_i w_i r_i^2 u_i v_i
+        r"""Calculate inner product of u and v.
+
+        Returns the **radial** inner product,
+
+        .. math ::
+            <u, v> = \int r^2 u(r) v(r) \,dr \approx \Delta r \sum_i w_i r_i^2 ui v_i
+
+        Parameters
+        ----------
+        u : array of float
+        v : array of float
+        romberg : bool
+            Determines if Romberg integration (from scipy) is used
+
+        Returns
+        -------
+        float
+            Inner product of u and v
+
+        """
         if romberg:
             return scipy.integrate.romb(self.r2dr * u * v)
         return np.dot(self.r2dr * u, v)
 
     def inner_product_Gn(self, n, v, romberg=False):
-        # Given weigths and r grid, \int r^2 u(r) v(r) \,dr \approx \Delta r \sum_i w_i r_i^2 u_i v_i
+        r"""Calculate inner product of G[n] (:math:`g_n`) and v.
+
+        Returns the **radial** inner product,
+
+        .. math ::
+            <g_n, v> = \int r^2 g_n(r) v(r) \,dr \approx \Delta r \sum_i w_i r_i^2 g_{n, i} v_i
+
+        Parameters
+        ----------
+        n : int > 0
+            order of basis function $g_n$
+        v : array of float
+        romberg : bool
+            Determines if Romberg integration (from scipy) is used
+
+        Returns
+        -------
+        float
+            Inner product of g_n and v
+
+        """
         if romberg:
             return scipy.integrate.romb(self.Gr2dr[n] * v)
         return np.dot(self.Gr2dr[n], v)
@@ -643,7 +785,7 @@ class SOAP(Kern):
             del satoms[[n for (n, atom) in enumerate(satoms) if atom.numbers[0]!=species[i]]]
             alpha = self.alpha[i]
             if derivative:
-                c, dc =  self.get_cnlm(satoms, derivative, alpha=alpha)
+                c, dc = self.get_cnlm(satoms, derivative, alpha=alpha)
                 dc_nlm[i] = dc.reshape((self.n_max, self.l_max*self.l_max))
             else:
                 c = self.get_cnlm(satoms, alpha=alpha)
@@ -680,7 +822,6 @@ class SOAP(Kern):
                                                     c_nlm[s1, i, l * l: l * l + 2 * l + 1]) / np.sqrt(2 * l + 1)
                                     else:
                                         dpspectrum[s0, s1, s2, i, j, l] = 0.
-
             return (pspectrum.reshape((n_species, n_species, self.n_max * self.n_max * self.l_max)) *
                     np.sqrt(8 * np.pi ** 2),
                     dpspectrum.reshape((n_species, n_species, n_species, self.n_max * self.n_max * self.l_max)) *
@@ -1022,37 +1163,38 @@ class SOAP(Kern):
                 offsets = [0]
                 rank = 0
 
+            # Pre-compute terms dependent on only one structure
+            rK00 = np.empty(X.shape[0])
+            for d1 in range(X.shape[0]):
+                if self.materials is not None:
+                    kappa11 = kappa_all[(material_id[d1], material_id[d1])]
+                else:
+                    kappa11 = kappa_full
+                if self.idx2folder[d1] not in self.Kdiag_buffer:
+                    K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa11, kappa11).real
+                    self.Kdiag_buffer[self.idx2folder[d1]] = K00
+                else:
+                    K00 = self.Kdiag_buffer[self.idx2folder[d1]]
+                rK00[d1] = self.K_reduction(K00)
+
+            # Compute kernel matrix K(X, X)
             for d1 in range(chunk[0], chunk[1]):
                 for d2 in range(d1):
                     if self.materials is not None:
                         kappa = kappa_all[(material_id[d1], material_id[d2])]
-                        kappa11 = kappa_all[(material_id[d1], material_id[d1])]
-                        kappa22 = kappa_all[(material_id[d2], material_id[d2])]
                     else:
                         kappa = kappa_full
-                        kappa11 = kappa_full
-                        kappa22 = kappa_full
                     if self.verbosity > 1:
-                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x '*(d2 + 1) + '. '*(d1 - d2 - 1) + '1 ',
-                              end=''); sys.stdout.flush()
+                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
+                        sys.stdout.flush()
                     if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
                         K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
                         self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]] = \
                         self.Kcross_buffer[self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
                     else:
                         K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]]
-                    if self.idx2folder[d1] not in self.Kdiag_buffer:
-                        K00 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d1]), kappa11, kappa11).real
-                        self.Kdiag_buffer[self.idx2folder[d1]] = K00
-                    else:
-                        K00 = self.Kdiag_buffer[self.idx2folder[d1]]
-                    if self.idx2folder[d2] not in self.Kdiag_buffer:
-                        K11 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d2], pss[d2]), kappa22, kappa22).real
-                        self.Kdiag_buffer[self.idx2folder[d2]] = K11
-                    else:
-                        K11 = self.Kdiag_buffer[self.idx2folder[d2]]
 
-                    Kij = self.K_reduction(K01) / np.sqrt(self.K_reduction(K00) * self.K_reduction(K11))
+                    Kij = self.K_reduction(K01) / np.sqrt(rK00[d1] * rK00[d2])
                     Klocal[d1 - offsets[rank], d2] = Kij
 
             if self.parallel_cnlm:
@@ -1150,39 +1292,47 @@ class SOAP(Kern):
             offsets = [0]
             rank = 0
 
+        # Pre-compute terms dependent on only one structure
+        rK00 = np.empty(X.shape[0])
+        rK11 = np.empty(X2.shape[0])
+        for d1 in range(X.shape[0]):
+            if self.materials is not None:
+                kappa11 = kappa_all[(material_id[d1], material_id[d1])]
+            else:
+                kappa11 = kappa_full
+            if self.idx2folder[d1] not in self.Kdiag_buffer:
+                K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa11, kappa11).real
+                self.Kdiag_buffer[self.idx2folder[d1]] = K00
+            else:
+                K00 = self.Kdiag_buffer[self.idx2folder[d1]]
+            rK00[d1] = self.K_reduction(K00)
+
+        # Compute kernel matrix K(X, X2)
+        for d2 in range(X2.shape[0]):
+            if self.materials is not None:
+                kappa22 = kappa_all[(material_id2[d2], material_id2[d2])]
+            else:
+                kappa22 = kappa_full
+            if self.idx2folderX2[d2] not in self.Kdiag_buffer:
+                K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa22, kappa22).real
+                self.Kdiag_buffer[self.idx2folderX2[d2]] = K11
+            else:
+                K11 = self.Kdiag_buffer[self.idx2folderX2[d2]]
+            rK11[d2] = self.K_reduction(K11)
+
         for d1 in range(chunk[0], chunk[1]):
             for d2 in range(X2.shape[0]):
                 if self.materials is not None:
                     kappa = kappa_all[(material_id[d1], material_id2[d2])]
-                    kappa11 = kappa_all[(material_id[d1], material_id[d1])]
-                    kappa22 = kappa_all[(material_id2[d2], material_id2[d2])]
                 else:
                     kappa = kappa_full
-                    kappa11 = kappa_full
-                    kappa22 = kappa_full
                 if self.verbosity > 1:
-                    self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[rank]) + 'x '*(d2 + 1) + '. '*(X2.shape[0] - d2 -1), end=''); sys.stdout.flush()
-                """
-                if self.idx2folder[d1] + self.idx2folderX2[d2] not in self.Kcross_buffer:
-                    K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
-                    self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folderX2[d2]] = \
-                    self.Kcross_buffer[self.idx2folderX2[d2] + '-' + self.idx2folder[d1]] = K01
-                else:
-                    K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folderX2[d2]]
-                """
-                K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
-                if self.idx2folder[d1] not in self.Kdiag_buffer:
-                    K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa11, kappa11).real
-                    self.Kdiag_buffer[self.idx2folder[d1]] = K00
-                else:
-                    K00 = self.Kdiag_buffer[self.idx2folder[d1]]
-                if self.idx2folderX2[d2] not in self.Kdiag_buffer:
-                    K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa22, kappa22).real
-                    self.Kdiag_buffer[self.idx2folderX2[d2]] = K11
-                else:
-                    K11 = self.Kdiag_buffer[self.idx2folderX2[d2]]
+                    # self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[rank]) + 'x '*(d2 + 1) + '. '*(X2.shape[0] - d2 -1), end=''); sys.stdout.flush()
+                    self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[rank]), end='')
+                    sys.stdout.flush()
 
-                Kij = self.K_reduction(K01) / np.sqrt(self.K_reduction(K00) * self.K_reduction(K11))
+                K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
+                Kij = self.K_reduction(K01) / np.sqrt(rK00[d1] * rK11[d2])
                 Klocal[d1 - offsets[rank], d2] = Kij
         if self.verbosity > 1:
             self.print('')
@@ -1283,6 +1433,7 @@ class SOAP(Kern):
                 offsets = [0]
                 rank = 0
 
+            # Pre-compute terms dependent on only one structure
             rK00 = np.empty(X.shape[0])
             for d in range(X.shape[0]):
                 if self.materials is not None:
@@ -1290,26 +1441,23 @@ class SOAP(Kern):
                 else:
                     kappa = kappa_full
                 if self.idx2folder[d] not in self.Kdiag_buffer:
-                    # K00 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d], pss[d]), kappa, kappa).real
                     K00 = np.einsum('ijkl, mnol, jn, ko', pss[d], pss[d], kappa, kappa).real
                     self.Kdiag_buffer[self.idx2folder[d]] = K00
                 else:
                     K00 = self.Kdiag_buffer[self.idx2folder[d]]
                 rK00[d] = self.K_reduction(K00)
 
+            # Compute kernel matrix K(X, X)
             for d1 in range(chunk[0], chunk[1]):
                 for d2 in range(d1):
                     if self.materials is not None:
                         kappa = kappa_all[(material_id[d1], material_id[d2])]
-                        # kappa11 = kappa_all[(material_id[d1], material_id[d1])]
-                        # kappa22 = kappa_all[(material_id[d2], material_id[d2])]
                     else:
                         kappa = kappa_full
-                        # kappa11 = kappa_full
-                        # kappa22 = kappa_full
                     if self.verbosity > 1:
-                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' *
-                                   (d1 - d2 - 1) + '1 ', end='')
+                        # self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' *
+                        #            (d1 - d2 - 1) + '1 ', end='')
+                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                         sys.stdout.flush()
                     if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
                         K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
@@ -1317,23 +1465,7 @@ class SOAP(Kern):
                             self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
                     else:
                         K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]]
-                    """
-                    if self.idx2folder[d1] not in self.Kdiag_buffer:
-                        K00 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d1]), kappa11,
-                                        kappa11).real
-                        self.Kdiag_buffer[self.idx2folder[d1]] = K00
-                    else:
-                        K00 = self.Kdiag_buffer[self.idx2folder[d1]]
-                    if self.idx2folder[d2] not in self.Kdiag_buffer:
-                        K11 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d2], pss[d2]), kappa22,
-                                        kappa22).real
-                        self.Kdiag_buffer[self.idx2folder[d2]] = K11
-                    else:
-                        K11 = self.Kdiag_buffer[self.idx2folder[d2]]
-                    """
 
-                    # rK00 = self.K_reduction(K00)
-                    # rK11 = self.K_reduction(K11)
                     rK01 = self.K_reduction(K01)
 
                     Kij = rK01 / np.sqrt(rK00[d1] * rK00[d2])
@@ -1343,19 +1475,19 @@ class SOAP(Kern):
             if self.parallel_cnlm:
                 comm.Allgatherv(Klocal, [K, chunksizes * X.shape[0], offsets * X.shape[0], MPI.DOUBLE])
 
-            # Derivatives
-            # dK/d\alpha
+            # Compute kernel matrix derivatives
+            # dK/d\alpha(X, X)
             rdK00_s = np.zeros(X.shape[0])
             if self.parallel_cnlm:
                 chunk1d, chunksizes1d, offsets1d = partition1d(X.shape[0], rank, size)
                 rdK00local = np.zeros((chunksizes1d[rank],))
-                comm.barrier()  # make sure all pss are available
             else:
                 chunk1d = [0, X.shape[0]]
                 chunksizes1d = [X.shape[0]]
                 offsets1d = [0]
                 rdK00local = rdK00_s
 
+            # Pre-compute terms dependent on only one structure
             rdK00 = np.empty((n_species, X.shape[0]))
             for s in range(n_species):
                 for d in range(chunk1d[0], chunk1d[1]):
@@ -1370,56 +1502,24 @@ class SOAP(Kern):
                     comm.Allgatherv(rdK00local, [rdK00_s, chunksizes1d, offsets1d, MPI.DOUBLE])
                 rdK00[s, :] = rdK00_s
 
-
+            # Compute dk_d\alpha(X, X)
             for s1 in range(n_species):
                 for d1 in range(chunk[0], chunk[1]):
                     for d2 in range(d1):
                         if self.materials is not None:
                             kappa = kappa_all[(material_id[d1], material_id[d2])]
-                            #kappa11 = kappa_all[(material_id[d1], material_id[d1])]
-                            #kappa22 = kappa_all[(material_id[d2], material_id[d2])]
                         else:
                             kappa = kappa_full
-                            #kappa11 = kappa_full
-                            #kappa22 = kappa_full
                         if self.verbosity > 1:
-                            self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
-                            d1 - d2 - 1) + '1 ',
-                                       end='')
+                            #self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
+                            #           d1 - d2 - 1) + '1 ', end='')
+                            self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                             sys.stdout.flush()
-                        """
-                        if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
-                            K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
-                            self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]] = self.Kcross_buffer[
-                                self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
-                        else:
-                            K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]]
-                        if self.idx2folder[d1] not in self.Kdiag_buffer:
-                            K00 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d1]), kappa11,
-                                            kappa11).real
-                            self.Kdiag_buffer[self.idx2folder[d1]] = K00
-                        else:
-                            K00 = self.Kdiag_buffer[self.idx2folder[d1]]
-                        if self.idx2folder[d2] not in self.Kdiag_buffer:
-                            K11 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d2], pss[d2]), kappa22,
-                                            kappa22).real
-                            self.Kdiag_buffer[self.idx2folder[d2]] = K11
-                        else:
-                            K11 = self.Kdiag_buffer[self.idx2folder[d2]]
-                        """
+
                         dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss[d2], kappa, kappa).real + \
                                np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d2][:, s1], kappa, kappa).real
-                        #dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d1][:, s1], kappa11, kappa11).real + \
-                        #       np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss[d1], kappa11, kappa11).real
-                        #dK11 = np.einsum('ijkl, mnol, jn, ko', pss[d2], dpss_dalpha[d2][:, s1], kappa22, kappa22).real + \
-                        #       np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d2][:, s1], pss[d2], kappa22, kappa22).real
 
-                        #rdK00 = self.K_reduction(dK00)
-                        #rdK11 = self.K_reduction(dK11)
                         rdK01 = self.K_reduction(dK01)
-                        # rK00 = self.K_reduction(K00)
-                        # rK11 = self.K_reduction(K11)
-                        # rK01 = self.K_reduction(K01)
                         rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK00[d2])
 
                         dKij = rdK01 / np.sqrt(rK00[d1] * rK00[d2])
@@ -1427,7 +1527,6 @@ class SOAP(Kern):
                                 (rdK00[s1, d1] * rK00[d2] + rK00[d1] * rdK00[s1, d2])
                         dKij *= self.exponent * pow(rK01 / np.sqrt(rK00[d1] * rK00[d2]), self.exponent - 1.)
 
-                        # dK_dalpha[s1, d1, d2] = dKij
                         dK_slocal[d1 - offsets[rank], d2] = dKij
 
                 if self.parallel_cnlm:
@@ -1440,9 +1539,9 @@ class SOAP(Kern):
             K += K.T - np.diag(K.diagonal())
             self.Km = np.power(K, self.exponent)
             for i in range(dK_dalpha.shape[0]):
-                dK_dalpha[i] += dK_dalpha[i].T
+                dK_dalpha[i] = dK_dalpha[i] + dK_dalpha[i].T
             self.dK_dalpha = dK_dalpha
-            self.reduction_times_X_X2.append(timer() - start)
+            self.reduction_times_X_X.append(timer() - start)
             return self.Km
 
         # else (X2 is not None)
@@ -1472,7 +1571,7 @@ class SOAP(Kern):
                 self.print('\rPow. spec. 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end='');
                 sys.stdout.flush()
             nl1[i].update(X[i, 0])
-            p, dp = self.get_all_power_spectrums(X[i, 0], nl[i], species, True)
+            p, dp = self.get_all_power_spectrums(X[i, 0], nl1[i], species, True)
             pss.append(p)
             dpss_dalpha.append(dp)
             for j, ll in enumerate(self.pss_buffer):
@@ -1500,7 +1599,7 @@ class SOAP(Kern):
                 print('\rPow. spec. {:02}/{:02}'.format(i + 1, X2.shape[0]), end='');
                 sys.stdout.flush()
             nl2[i].update(X2[i, 0])
-            p, dp = self.get_all_power_spectrums(X2[i, 0], nl[i], species, True)
+            p, dp = self.get_all_power_spectrums(X2[i, 0], nl2[i], species, True)
             pss2.append(p)
             dpss2_dalpha.append(dp)
             for j, ll in enumerate(self.pss_buffer):
@@ -1534,6 +1633,7 @@ class SOAP(Kern):
             offsets = [0]
             rank = 0
 
+        # Pre-compute terms dependent on only one structure
         rK00 = np.empty(X.shape[0])
         rK11 = np.empty(X2.shape[0])
         for d1 in range(X.shape[0]):
@@ -1552,134 +1652,139 @@ class SOAP(Kern):
             K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa22, kappa22).real
             rK11[d2] = self.K_reduction(K11)
 
+        # Compute kernel matrix K(X, X2)
         for d1 in range(chunk[0], chunk[1]):
             for d2 in range(X2.shape[0]):
                 if self.materials is not None:
                     kappa = kappa_all[(material_id[d1], material_id2[d2])]
-                    kappa11 = kappa_all[(material_id[d1], material_id[d1])]
-                    kappa22 = kappa_all[(material_id2[d2], material_id2[d2])]
                 else:
                     kappa = kappa_full
-                    kappa11 = kappa_full
-                    kappa22 = kappa_full
                 if self.verbosity > 1:
-                    self.print(
-                        '\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
-                        X2.shape[0] - d2 - 1),
-                        end='')
+                    # self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (X2.shape[0] - d2 - 1), end='')
+                    self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                     sys.stdout.flush()
 
                 K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
-                #K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa11, kappa11).real
-                #K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa22, kappa22).real
-
-                #rK00 = self.K_reduction(K00)
-                #rK11 = self.K_reduction(K11)
                 rK01 = self.K_reduction(K01)
 
                 Kij = rK01 / np.sqrt(rK00[d1] * rK11[d2])
-                #Kij = rK01 / np.sqrt(rK00 * rK11)
-
                 Klocal[d1 - offsets[rank], d2] = Kij
 
         if self.parallel_cnlm:
             comm.Allgatherv(Klocal, [K, chunksizes * X2.shape[0], offsets * X2.shape[0], MPI.DOUBLE])
 
-        # Derivatives
+        # Compute kernel matrix derivatives
         # FIXME: kappa derivative
         """
-        # dK/d\kappa. s1 == s2 => dK/d\kappa = 0. dK/d\kappa_{s1s2} = dK/d\kappa_{s2s1}
+        # dK/d\kappa(X, X2). s1 == s2 => dK/d\kappa = 0. dK/d\kappa_{s1s2} = dK/d\kappa_{s2s1}
+        # Pre-compute terms dependent on only one structure
+        rdK00 = np.empty((n_species, n_species, X.shape[0]))
+        for s1 in range(n_species):
+            for s2 in range(s1):
+                for d1 in range(X.shape[0]):
+                    if self.materials is not None:
+                        kappa11 = kappa_all[(material_id[d1], material_id[d1])]
+                    else:
+                        kappa11 = kappa_full
+
+                    dK00 = np.einsum('ijk, mnk, jn', pss[d1][:, s1, :, :], pss[d1][:, s2, :, :], kappa11).real + \
+                           np.einsum('ijk, mnk, jn', pss[d1][:, s2, :, :], pss[d1][:, s1, :, :], kappa11).real + \
+                           np.einsum('ijk, mnk, jn', pss[d1][:, :, s1, :], pss[d1][:, :, s2, :], kappa11).real + \
+                           np.einsum('ijk, mnk, jn', pss[d1][:, :, s2, :], pss[d1][:, :, s1, :], kappa11).real
+
+                    rdK00[s1, s2, d1] = rdK00[s2, s1, d1] = self.K_reduction(dK00)
+
+        rdK11 = np.empty((n_species, n_species, X2.shape[0]))
+        for s1 in range(n_species):
+            for s2 in range(s1):
+                for d2 in range(X2.shape[0]):
+                    if self.materials is not None:
+                        kappa22 = kappa_all[(material_id2[d2], material_id2[d2])]
+                    else:
+                        kappa22 = kappa_full
+
+                    dK11 = np.einsum('ijk, mnk, jn', pss2[d2][:, s1, :, :], pss2[d2][:, s2, :, :], kappa22).real + \
+                           np.einsum('ijk, mnk, jn', pss2[d2][:, s2, :, :], pss2[d2][:, s1, :, :], kappa22).real + \
+                           np.einsum('ijk, mnk, jn', pss2[d2][:, :, s1, :], pss2[d2][:, :, s2, :], kappa22).real + \
+                           np.einsum('ijk, mnk, jn', pss2[d2][:, :, s2, :], pss2[d2][:, :, s1, :], kappa22).real
+
+                    rdK11[s1, s2, d1] = rdK11[s2, s1, d1] = self.K_reduction(dK11)
+
         for s1 in range(n_species):
             for s2 in range(s1):
                 for d1 in range(X.shape[0]):
                     for d2 in range(X2.shape[0]):
                         if self.materials is not None:
                             kappa = kappa_all[(material_id[d1], material_id2[d2])]
-                            kappa11 = kappa_all[(material_id[d1], material_id[d1])]
-                            kappa22 = kappa_all[(material_id2[d2], material_id2[d2])]
                         else:
                             kappa = kappa_full
-                            kappa11 = kappa_full
-                            kappa22 = kappa_full
                         if self.verbosity > 1:
-                            self.print(
-                                '\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
-                                X2.shape[0] - d2 - 1),
-                                end='')
+                            # self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (X2.shape[0] - d2 - 1), end='')
+                            self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                             sys.stdout.flush()
 
-                        K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
-                        K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa11, kappa11).real
-                        K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa22, kappa22).real
                         dK01 = np.einsum('ijk, mnk, jn', pss[d1][:, s1, :, :], pss2[d2][:, s2, :, :], kappa).real + \
                                np.einsum('ijk, mnk, jn', pss[d1][:, s2, :, :], pss2[d2][:, s1, :, :], kappa).real + \
                                np.einsum('ijk, mnk, jn', pss[d1][:, :, s1, :], pss2[d2][:, :, s2, :], kappa).real + \
                                np.einsum('ijk, mnk, jn', pss[d1][:, :, s2, :], pss2[d2][:, :, s1, :], kappa).real
-                        dK00 = np.einsum('ijk, mnk, jn', pss[d1][:, s1, :, :], pss[d1][:, s2, :, :], kappa11).real + \
-                               np.einsum('ijk, mnk, jn', pss[d1][:, s2, :, :], pss[d1][:, s1, :, :], kappa11).real + \
-                               np.einsum('ijk, mnk, jn', pss[d1][:, :, s1, :], pss[d1][:, :, s2, :], kappa11).real + \
-                               np.einsum('ijk, mnk, jn', pss[d1][:, :, s2, :], pss[d1][:, :, s1, :], kappa11).real
-                        dK11 = np.einsum('ijk, mnk, jn', pss2[d2][:, s1, :, :], pss2[d2][:, s2, :, :], kappa22).real + \
-                               np.einsum('ijk, mnk, jn', pss2[d2][:, s2, :, :], pss2[d2][:, s1, :, :], kappa22).real + \
-                               np.einsum('ijk, mnk, jn', pss2[d2][:, :, s1, :], pss2[d2][:, :, s2, :], kappa22).real + \
-                               np.einsum('ijk, mnk, jn', pss2[d2][:, :, s2, :], pss2[d2][:, :, s1, :], kappa22).real
 
-                        rdK00 = self.K_reduction(dK00)
-                        rdK11 = self.K_reduction(dK11)
                         rdK01 = self.K_reduction(dK01)
-                        rK00 = self.K_reduction(K00)
-                        rK11 = self.K_reduction(K11)
-                        rK01 = self.K_reduction(K01)
+                        rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK00[d2])
 
-                        dKij = rdK01 / np.sqrt(rK00 * rK11)
-                        dKij -= 0.5 * rK01 / (rK00 * rK11) ** (1.5) * (rdK00 * rK11 + rK00 * rdK11)
-                        dKij *= self.exponent * pow(rK01 / np.sqrt(rK00 * rK11), self.exponent - 1.)
+                        dKij = rdK01 / np.sqrt(rK00[d1] * rK11[d2])
+                        dKij -= 0.5 * rK01 / (rK00[d1] * rK11[d2]) ** (1.5) * (rdK00[s1, s2, d1] * rK11[d2] + rK00[d1] * rdK11[s1, s2, d2])
+                        dKij *= self.exponent * pow(K[d1, d2], self.exponent - 1.)
 
                         dK_dkappa[s1, s2, d1, d2] = dKij
         """
+
         # dK/d\alpha
+        # Pre-compute terms dependent on only one structure
+        rdK00 = np.empty((n_species, X.shape[0]))
+        rdK11 = np.empty((n_species, X2.shape[0]))
+        for s1 in range(n_species):
+            for d1 in range(X.shape[0]):
+                if self.materials is not None:
+                    kappa11 = kappa_all[(material_id[d1], material_id[d1])]
+                else:
+                    kappa11 = kappa_full
+                dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d1][:, s1], kappa11, kappa11).real + \
+                       np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss[d1], kappa11, kappa11).real
+                rdK00[s1, d1] = self.K_reduction(dK00)
+
+        for s1 in range(n_species):
+            for d2 in range(X2.shape[0]):
+                if self.materials is not None:
+                    kappa22 = kappa_all[(material_id2[d2], material_id2[d2])]
+                else:
+                    kappa22 = kappa_full
+                dK11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], dpss2_dalpha[d2][:, s1], kappa22, kappa22).real + \
+                       np.einsum('ijkl, mnol, jn, ko', dpss2_dalpha[d2][:, s1], pss2[d2], kappa22, kappa22).real
+                rdK11[s1, d2] = self.K_reduction(dK11)
+
+        # Compute dK/d\alpha(X, X2)
         for s1 in range(n_species):
             for d1 in range(chunk[0], chunk[1]):  # X.shape[0]):
                 for d2 in range(X2.shape[0]):
                     if self.materials is not None:
                         kappa = kappa_all[(material_id[d1], material_id2[d2])]
-                        #kappa11 = kappa_all[(material_id[d1], material_id[d1])]
-                        #kappa22 = kappa_all[(material_id2[d2], material_id2[d2])]
                     else:
                         kappa = kappa_full
-                        #kappa11 = kappa_full
-                        #kappa22 = kappa_full
                     if self.verbosity > 1:
-                        self.print(
-                            '\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
-                            X2.shape[0] - d2 - 1),
-                            end='')
+                        # self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (X2.shape[0] - d2 - 1), end='')
+                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                         sys.stdout.flush()
 
-                    #K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
-                    #K00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d1], kappa11, kappa11).real
-                    #K11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], pss2[d2], kappa22, kappa22).real
-                    dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1][:, s1], pss2[d2], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma2[d2][:, s1], kappa, kappa).real
-                    dK00 = np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dsigma[d1][:, s1], kappa11, kappa11).real + \
-                           np.einsum('ijkl, mnol, jn, ko', dpss_dsigma[d1][:, s1], pss[d1], kappa11, kappa11).real
-                    dK11 = np.einsum('ijkl, mnol, jn, ko', pss2[d2], dpss_dsigma2[d2][:, s1], kappa22, kappa22).real + \
-                           np.einsum('ijkl, mnol, jn, ko', dpss_dsigma2[d2][:, s1], pss2[d2], kappa22, kappa22).real
+                    dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss2[d2], kappa, kappa).real + \
+                           np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss2_dalpha[d2][:, s1], kappa, kappa).real
 
-                    rdK00 = self.K_reduction(dK00)
-                    rdK11 = self.K_reduction(dK11)
                     rdK01 = self.K_reduction(dK01)
-                    #rK00 = self.K_reduction(K00)
-                    #rK11 = self.K_reduction(K11)
-                    #rK01 = self.K_reduction(K01)
-                    rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK11[d2])  # self.K_reduction(K01)
+                    rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK11[d2])
 
                     dKij = rdK01 / np.sqrt(rK00[d1] * rK11[d2])
-                    dKij -= 0.5 * rK01 / (rK00[d1] * rK11[d2]) ** (1.5) * (rdK00 * rK11[d2] + rK00[d1] * rdK11)
+                    dKij -= 0.5 * rK01 / (rK00[d1] * rK11[d2]) ** (1.5) * (rdK00[s1, d1] * rK11[d2] + rK00[d1] * rdK11[s1, d2])
                     dKij *= self.exponent * pow(K[d1, d2], self.exponent - 1.)
-                    #dKij *= self.exponent * pow(rK01 / np.sqrt(rK00 * rK11), self.exponent - 1.)
 
-                    # dK_dalpha[s1, d1, d2] = dKij
                     dK_slocal[d1 - offsets[rank], d2] = dKij
 
             if self.parallel_cnlm:
@@ -1690,32 +1795,42 @@ class SOAP(Kern):
             self.print('')
 
         self.Km = np.power(K, self.exponent)
-        for i in range(dK_dalpha.shape[0]):
-            dK_dalpha[i] += dK_dalpha[i].T
+        # FIXME: kappa derivative
+        # for s1 in range(n_species):
+        #     for s2 in range(s1 + 1, n_species):
+        #         dK_dkappa[s1, s2, :, :] = dK_dkappa[s2, s1, :, :]
         self.dK_dalpha = dK_dalpha
         self.reduction_times_X_X2.append(timer() - start)
         return self.Km
 
     def update_gradients_full(self, dL_dK, X, X2):
         if self.optimize_sigma:
-            """
-            # Numerical gradient
-            self.n_eval += 2
-            dsigma = 0.005
-            soap = SOAP(self.soap_input_dim, self.sigma, self.r_cut, self.l_max, self.n_max, self.exponent,
-                        self.r_grid_points, self.similarity, self.multi_atom, self.verbosity, self.structure_file)
-            soap.sigma = soap.sigma + dsigma
-            K1 = soap.K(X, X2)
-            soap = SOAP(self.soap_input_dim, self.sigma, self.r_cut, self.l_max, self.n_max, self.exponent,
-                        self.r_grid_points, self.similarity, self.multi_atom, self.verbosity, self.structure_file)
-            soap.sigma = soap.sigma - dsigma
-            K0 = soap.K(X, X2)
-            self.sigma.gradient = np.sum(dL_dK * (K1 - K0) / (2 * dsigma))
-            print('\ndK_dsigma (n): {}'.format(self.sigma.gradient))
-            """
-            # Analytical gradient
-            for i, a in enumerate(self.alpha):
-                self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha[i] / (-self.sigma[i] ** 3))
+            if self.num_diff:
+                # Numerical gradient
+                # self.n_eval += 2
+                dsigma = 0.0005
+                for i, a in enumerate(self.alpha):
+                    self.print('+dK[{}]'.format(i))
+                    soap = SOAP(self.soap_input_dim, self.sigma, self.r_cut, self.l_max, self.n_max, self.exponent,
+                                self.r_grid_points, self.similarity, self.multi_atom, self.verbosity, self.structure_file,
+                                parallel='cnlm', optimize_sigma=False, materials=self.materials, elements=self.elements)
+                    soap.sigma[i] = soap.sigma[i] + dsigma
+                    K1 = soap.K(X, X2)
+                    self.print('-dK[{}]'.format(i))
+                    soap = SOAP(self.soap_input_dim, self.sigma, self.r_cut, self.l_max, self.n_max, self.exponent,
+                                self.r_grid_points, self.similarity, self.multi_atom, self.verbosity, self.structure_file,
+                                parallel='cnlm', optimize_sigma=False, materials=self.materials, elements=self.elements)
+                    soap.sigma[i] = soap.sigma[i] - dsigma
+                    K0 = soap.K(X, X2)
+                    self.sigma.gradient[i] = np.sum(dL_dK * (K1 - K0) / (2 * dsigma))
+                    np.savez('dK_dsigma_numerical_{}'.format(i), dK=(K1 - K0) / (2 * dsigma))
+            else:
+                # Analytical gradient
+                for i, a in enumerate(self.alpha):
+                    self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha[i] / (-self.sigma[i] ** 3))
+                    np.savez('dK_dsigma_analytical_{}'.format(i), dK=self.dK_dalpha[i] / (-self.sigma[i] ** 3))
+            #self.print(self.sigma.values, self.sigma.gradient)
+            #baboom
         if not (self.optimize_exponent or self.optimize_sigma):
             pass
 
@@ -1738,7 +1853,7 @@ class SOAP(Kern):
             self.pss_buffer = []    # Forget values of the power spectrum
             self.Kcross_buffer = {}
             self.Kdiag_buffer = {}
-            self.derivative = True  # Calculate derivative next iteration
+            self.derivative = True and (not self.num_diff) # Calculate analytical derivative next iteration
             self.dK_dalpha = None   # Invalidate derivative
         else:
             pass
