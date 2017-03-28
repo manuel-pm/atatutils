@@ -547,7 +547,7 @@ class SOAP(Kern):
         Parameters
         ----------
         n_points : int >= 0, optional
-            Number of points in the radial grid (defaults to self.n_max)
+            Number of points in the radial grid (defaults to self.n_max).
         """
         if n_points is None:
             self.r_grid = np.array([self.delta_r*i for i in range(self.n_max)])
@@ -565,7 +565,7 @@ class SOAP(Kern):
         and its Cholesky decomposition :math:`LL^T` are calculated. The orthonormal
         basis functions are then :math:`g_n(x) = \sum_k L^{-T}_{kn} \phi_k(x)`
         Finally, we define self.Gr2dr as :math:`g_n(r)*r^2` (at :math:`r=`self.r_grid) such that
-        np.dot(self.Gr2dr[n, :], f[:]) approximates :math:`\int_0^{r_c}r^2 \g_n(r)f(r)\,dr`
+        np.dot(self.Gr2dr[n, :], f[:]) approximates :math:`\int_0^{r_c}r^2 \g_n(r)f(r)\,dr`.
 
         """
         order = self.quad_order
@@ -629,18 +629,18 @@ class SOAP(Kern):
         Parameters
         ----------
         r_nodes : int > 0
-            number of nodes
+            number of nodes.
         delta_r : float > 0
-            mesh spacing
+            mesh spacing.
         order : int > 0
-            quadrature order
+            quadrature order.
         type : str
-            quadrature type
+            quadrature type.
 
         Returns
         -------
         array of float
-            weight vector
+            weight vector.
 
         """
         if type=='gregory':
@@ -662,12 +662,12 @@ class SOAP(Kern):
         u : array of float
         v : array of float
         romberg : bool
-            Determines if Romberg integration (from scipy) is used
+            Determines if Romberg integration (from scipy) is used.
 
         Returns
         -------
         float
-            Inner product of u and v
+            Inner product of u and v.
 
         """
         if romberg:
@@ -685,15 +685,15 @@ class SOAP(Kern):
         Parameters
         ----------
         n : int > 0
-            order of basis function $g_n$
+            order of basis function $g_n$.
         v : array of float
         romberg : bool
-            Determines if Romberg integration (from scipy) is used
+            Determines if Romberg integration (from scipy) is used.
 
         Returns
         -------
         float
-            Inner product of g_n and v
+            Inner product of g_n and v.
 
         """
         if romberg:
@@ -701,7 +701,24 @@ class SOAP(Kern):
         return np.dot(self.Gr2dr[n], v)
 
     def get_cnlm(self, atoms, derivative=False, alpha=None):
+        r"""Calculate the coefficients of the expansion of the pseudo-density
+        for the given atomic environment.
 
+        Parameters
+        ----------
+        atoms : miniAtoms or ase.Atoms object
+            Object representing an atomic environment.
+        derivative : bool
+            Determines if the derivative :math:`\partial c_{nlm}/\partial \alpha` is calculated.
+        alpha : float > 0
+            Precision of the Gaussian representing the atoms.
+        Returns
+        -------
+        c_nlm : 1-D ndarray of complex float
+            Contains the flattened array :math:`c_{nlm}`.
+        c_nlm : 1-D ndarray of complex float
+            Contains the flattened array :math:`\partial c_{nlm}/\partial \alpha`.
+        """
         if alpha is None:
             alpha=self.alpha
         c_nlm = np.zeros(self.n_max * self.l_max * self.l_max, dtype=complex)
@@ -771,6 +788,27 @@ class SOAP(Kern):
         return c_nlm
 
     def get_power_spectrum(self, atoms, species=None, derivative=False):
+        r"""Calculates the power spectrum :math:`p_{nll'}^{ss'}` of the pseudo-density for the
+        given atomic environment and optionally its derivatives with respect
+        to :math:`\alpha_i`.
+
+        Parameters
+        ----------
+        atoms : miniAtoms or ase.Atoms object
+            Object representing an atomic environment.
+        species : list of int > 0
+            Atomic numbers of the species in the atomic neighbourhood.
+        derivative : bool
+            Determines if the derivative :math:`\partial p_{nll'}^{ss'}/\partial \alpha_{i}` is calculated.
+
+        Returns
+        -------
+        pspectrum : 3-D ndarray of complex float
+            Power spectrum :math:`p_{nll'}^{ss'}`.
+        dpspectrum : 4-D ndarray of complex float
+            Derivatives of the power spectrum :math:`\partial p_{nll'}^{ss'}/\partial \alpha_{i}`.
+
+        """
         if species is not None:
             n_species = len(species)
         else:
@@ -829,15 +867,51 @@ class SOAP(Kern):
         return pspectrum.reshape((n_species, n_species, self.n_max*self.n_max*self.l_max)) * np.sqrt(8*np.pi**2)
 
     def get_approx_density(self, atoms, alpha, r):
-        # atoms has positions of atoms, (natoms x 3)
-        # r has the points where we want the density, (npoints x 3)
+        """Calculates  the pseudo-density with centres in atoms, precision alpha at the
+        coordinates r.
+
+        Parameters
+        ----------
+        atoms : 2-D ndarray (natoms, 3)
+            Positions of the centres of the Gaussians.
+        alpha : float > 0
+            Precision of the Gaussians.
+        r : 2-D ndarray (npoints, 3)
+            Positions where the pseud-density is calculated.
+
+        Returns
+        -------
+        2-D ndarray (npoints, 3)
+            Pseudo-density evaluated at r.
+        """
 
         if len(r.shape) == 1:
             r = r[np.newaxis, :]
-        d = np.linalg.norm(satoms[:, :, np.newaxis] - r.T, axis=1)
+        d = np.linalg.norm(atoms[:, :, np.newaxis] - r.T, axis=1)
         return np.exp(-alpha * d * d).sum(axis=0)
  
     def I_lmm(self, atoms0, atoms1, alpha):
+        """Calculates the overlap integral between the
+        pseudo-densities of two atomic environments.
+
+        .. note:: Deprecated
+                  `I_lmm` will be removed because it cannot
+                  be used if the atomic environments have different alpha.
+
+        Parameters
+        ----------
+        atoms0 : miniAtoms or ase.Atoms object
+            Object representing an atomic environment.
+        atoms1 : miniAtoms or ase.Atoms object
+            Object representing an atomic environment.
+        alpha : float > 0
+            Precision of the Gaussians representing the pseudo-density.
+
+        Returns
+        -------
+        1-D ndarray
+            Flattened overlap integral for each lmm'.
+        """
         r0_cartesian = atoms0.positions
         r1_cartesian = atoms1.positions
 
@@ -864,14 +938,80 @@ class SOAP(Kern):
         return I * np.sqrt(8 * np.pi**2) * 4 * np.pi * (np.pi / (2 * alpha))**(3. / 2)
 
     def I2(self, atoms0, atoms1, alpha):
+        """Claculates the inner product between two overlap integrals.
+
+        .. note:: Deprecated
+                  `I` will be removed because it cannot
+                  be used if the atomic environments have different alpha.
+
+        Parameters
+        ----------
+        atoms0 : miniAtoms or ase.Atoms object
+            Object representing an atomic environment.
+        atoms1 : miniAtoms or ase.Atoms object
+            Object representing an atomic environment.
+        alpha : float > 0
+            Precision of the Gaussians representing the pseudo-density.
+
+        Returns
+        -------
+        float
+            Inner product of the two integrals
+
+        See Also
+        --------
+        I_lmm
+
+        """
         I = self.I_lmm(atoms0, atoms1, alpha)
         return np.dot(np.conj(I),  I).real
 
     def K_reduction(self, K):
+        """Reduction of the matrix containing the product
+        of power spectrums between neighborhoods.
+
+        Parameters
+        ----------
+        K : 2-D ndarray
+            Array with the inner product of power spectrums
+            between for each pair of neighborhoods.
+
+        Returns
+        -------
+        float
+            Reduction of the input matrix.
+
+        """
         Kred = K.sum()
         return Kred
 
     def get_all_power_spectrums(self, atoms, nl, species, derivative=False):
+        """Calculates the power spectrum of all neighborhoods in atoms.
+
+        Parameters
+        ----------
+        atoms : miniAtoms or ase.Atoms object
+            Object representing an atomic environment.
+        nl : ase.NeighborList
+            Object representing the neighborhoods of atoms.
+        species : list of int > 0
+            Atomic numbers of the species in the atomic neighbourhood.
+        derivative : bool
+            Determines if the derivative of the power spectrums is calculated.
+
+        Returns
+        -------
+        list of 3-D ndarray of complex float
+            Power spectrums :math:`p_{nll'}^{ss'}` for each neighborhood in atoms.
+        list of 4-D ndarray of complex float
+            Derivatives of the power spectrums :math:`\partial p_{nll'}^{ss'}/\partial \alpha_{i}`
+            for each neighborhood in atoms.
+
+        See Also
+        --------
+        get_power_spectrum
+
+        """
         start = timer()
         if self.multi_atom:
             n_species = len(species)
@@ -908,6 +1048,25 @@ class SOAP(Kern):
 
     @Cache_this(limit=3, ignore_args=(0,))
     def K(self, X, X2):
+        """Calculates the SOAP kernel between structures in X and X2.
+
+        Also, if the derivative is necessary, it will update the array
+        self.dK_dalpha with the derivative of the kernel with respect
+        to each alpha.
+
+        Parameters
+        ----------
+        X : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+        X2 : 2-D ndarray (nstructures2, 1)
+            Id's for another set of structures.
+
+        Returns
+        -------
+        2-D ndarray of float
+            Kernel matrix between the inputs in X and X2.
+
+        """
         start = timer()
         X_shape = X.shape[0]
         if X2 is not None:
@@ -1345,6 +1504,19 @@ class SOAP(Kern):
         return self.Km
 
     def Kdiag(self, X):
+        """Computes the diagonal of the kernel matrix between X and itself
+
+        Parameters
+        ----------
+        X : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+
+        Returns
+        -------
+        1-D ndarray
+            Diagonal of the kernel matrix between X and itself.
+
+        """
         return np.ones(X.shape[0])
 
     def _K_dK(self, X, X2, load_X, load_X2, material_id, material_id2):
@@ -1804,6 +1976,22 @@ class SOAP(Kern):
         return self.Km
 
     def update_gradients_full(self, dL_dK, X, X2):
+        """Updates the derivatives of the parameters of the model.
+
+        Parameters
+        ----------
+        dL_dK : float
+            Derivative of the Likelihood/posterior with respect to the kernel.
+        X : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+        X2 : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+
+        Notes
+        -----
+        It assumes that K(X, X2) has been called before requesting the derivative.
+
+        """
         if self.optimize_sigma:
             if self.num_diff:
                 # Numerical gradient
@@ -1835,14 +2023,28 @@ class SOAP(Kern):
             pass
 
     def update_gradients_diag(self, dL_dKdiag, X):
+        """Updates the diagonal of the gradients of the kernel parameters.
+
+        Parameters
+        ----------
+        dL_dKdiag : float
+            Derivative of the Likelihood/posterior with respect to the diagonal of the kernel.
+        X : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+
+        """
         if self.optimize_sigma:
-            self.sigma.gradient = 0.
+            for i, a in enumerate(self.alpha):
+                self.sigma.gradient[i] = 0.
         if self.optimize_exponent:
             self.exponent.gradient = 0.
         if not (self.optimize_exponent or self.optimize_sigma):
             pass
 
     def parameters_changed(self):
+        """Updates the class when a model parameter is changed.
+
+        """
         self.alpha = 1. / (2 * self.sigma ** 2)
         self.pss_buffer = []  # Forget values of the power spectrum
         self.Kcross_buffer = {}
@@ -1859,4 +2061,20 @@ class SOAP(Kern):
             pass
 
     def gradients_X(self, dL_dK, X, X2=None):
+        """Compute the derivatives with respect to the inputs of the model.
+
+        Parameters
+        ----------
+        dL_dK : float
+            Derivative of the Likelihood/posterior with respect to the kernel.
+        X : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+        X2 : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+
+        Notes
+        -----
+        Not implemented, it cannot be defined as the inputs are not continuous.
+
+        """
         pass
