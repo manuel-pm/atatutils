@@ -532,28 +532,25 @@ class SOAP(Kern):
         self.soap_input_dim = input_dim
         self.r_grid_points = r_grid_points
         self.n_eval = 0
+
         self.parallel_cnlm = False
+        if mpi_comm is not None:
+            parallel = True
         if parallel:
-            self.parallel_cnlm = True
-        self.parallel = self.parallel_cnlm
-        if self.parallel and mpi_comm is None:
             from mpi4py import MPI
-            mpi_comm = MPI.COMM_WORLD
+            from utils.parprint import parprint
+            self.print = parprint
+            self.parallel_cnlm = True
+            if mpi_comm is None:
+                mpi_comm = MPI.COMM_WORLD
         if mpi_comm is not None:
             self.comm = mpi_comm
             self.size = self.comm.Get_size()
             self.rank = self.comm.Get_rank()
-            self.parallel = True
         else:
             self.comm = None
             self.size = 1
             self.rank = 0
-            self.parallel_cnlm = False
-            self.parallel = False
-        if self.parallel:
-            from utils.parprint import parprint
-            self.print = parprint
-        else:
             self.print = print
 
         self.optimize_sigma = optimize_sigma
