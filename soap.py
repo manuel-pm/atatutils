@@ -1066,6 +1066,13 @@ class SOAP(Kern):
         2-D ndarray of float
             Kernel matrix between the inputs in X and X2.
 
+        Notes
+        -----
+        This functions takes structure names as inputs, i.e., the path to where
+        its structure is defined (in a file using ATAT format). It then loads them
+        into ase.Atoms objects that are used in the actual implementation
+        of the SOAP kernel in self._K and self._K_dK.
+
         """
         start = timer()
         X_shape = X.shape[0]
@@ -1202,7 +1209,8 @@ class SOAP(Kern):
                 rr = np.dot(R, rr.T).T
                 rZ = self.get_approx_density(atoms=positions, alpha=self.alpha[i], r=rr).reshape((nx, ny))
 
-                ax.plot_surface(rX, rY, rZ, rstride=1, cstride=1, cmap=cm.coolwarm, linewidth=0.1, antialiased=True, shade=True)#, alpha=1.)
+                ax.plot_surface(rX, rY, rZ, rstride=1, cstride=1, cmap=cm.coolwarm,
+                                linewidth=0.1, antialiased=True, shade=True)#, alpha=1.)
                 cset = ax.contour(rX, rY, rZ, zdir='z', offset=1.1, linewidth=0.1, cmap=cm.coolwarm)
                 #cset = ax.contour(X, Y, Z, zdir='x', offset=-40, cmap=cm.coolwarm)
                 #cset = ax.contour(X, Y, Z, zdir='y', offset=40, cmap=cm.coolwarm)
@@ -1236,7 +1244,29 @@ class SOAP(Kern):
         return K
 
     def _K(self, X, X2, load_X, load_X2, material_id, material_id2):
+        """Computes the kernel matrix between X and X2.
 
+        Parameters
+        ----------
+        X : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+        X2 : 2-D ndarray (nstructures2, 1)
+            Id's for a set of structures.
+        load_X : list of pairs
+            Each pair contains the input in X to be loaded and the location in the pss buffer to load from.
+        load_X2 : list of pairs
+            Same as load_X but with inputs from X2.
+        material_id : list of str
+            For each input in X, the id of the material to which it belongs as specified in self.materials.
+        material_id2
+            For each input in X2, the id of the material to which it belongs as specified in self.materials.
+
+        Returns
+        -------
+        2-D ndarray of float
+            Kernel matrix between the inputs in X and X2.
+
+        """
         self.n_eval += 1
         if (X2 is not None) and (X.shape == X2.shape) and (X == X2).all():
             X2 = None
@@ -1265,8 +1295,9 @@ class SOAP(Kern):
                         kappa_all[(material1, material2)] = np.empty((n_species, n_species))
                         for s1 in range(n_species):
                             for s2 in range(n_species):
-                                kappa_all[(material1, material2)][s1, s2] = self.similarity(self.elements[material1][s1],
-                                                                                            self.elements[material2][s2])
+                                kappa_all[(material1, material2)][s1, s2] = \
+                                    self.similarity(self.elements[material1][s1],
+                                                    self.elements[material2][s2])
         else:   
             species = None
 
@@ -1347,7 +1378,8 @@ class SOAP(Kern):
                         self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                         sys.stdout.flush()
                     if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
-                        K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
+                        # K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
+                        K01 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d2]).real, kappa, kappa)
                         self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]] = \
                         self.Kcross_buffer[self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
                     else:
@@ -1416,7 +1448,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                print('\rPow. spec. {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
+                self.print('\rPow. spec. 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
             # Load pss if available. Otherwise, calculate and save
             if load >= 0:
                 pss2.append(self.pss_buffer[load][1])
@@ -1486,11 +1518,11 @@ class SOAP(Kern):
                 else:
                     kappa = kappa_full
                 if self.verbosity > 1:
-                    # self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[rank]) + 'x '*(d2 + 1) + '. '*(X2.shape[0] - d2 -1), end=''); sys.stdout.flush()
                     self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[rank]), end='')
                     sys.stdout.flush()
 
-                K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
+                # K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
+                K01 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss2[d2]).real, kappa, kappa)
                 Kij = self.K_reduction(K01) / np.sqrt(rK00[d1] * rK11[d2])
                 Klocal[d1 - offsets[rank], d2] = Kij
         if self.verbosity > 1:
@@ -1508,7 +1540,7 @@ class SOAP(Kern):
 
         Parameters
         ----------
-        X : 2-D ndarray (nstructures1, 1)
+        X : 2-D ndarray (nstructures, 1)
             Id's for a set of structures.
 
         Returns
@@ -1520,7 +1552,34 @@ class SOAP(Kern):
         return np.ones(X.shape[0])
 
     def _K_dK(self, X, X2, load_X, load_X2, material_id, material_id2):
+        """Computes the kernel matrix between X and X2 and its derivative with
+        respect to the kernel parameters.
 
+        Parameters
+        ----------
+        X : 2-D ndarray (nstructures1, 1)
+            Id's for a set of structures.
+        X2 : 2-D ndarray (nstructures2, 1)
+            Id's for a set of structures.
+        load_X : list of pairs
+            Each pair contains the input in X to be loaded and the location in the pss buffer to load from.
+        load_X2 : list of pairs
+            Same as load_X but with inputs from X2.
+        material_id : list of str
+            For each input in X, the id of the material to which it belongs as specified in self.materials.
+        material_id2
+            For each input in X2, the id of the material to which it belongs as specified in self.materials.
+
+        Returns
+        -------
+        2-D ndarray of float
+            Kernel matrix between the inputs in X and X2.
+
+        Notes
+        -----
+        The derivative is not returned, but updated in self.dK_d*.
+
+        """
         self.n_eval += 2
         if (X2 is not None) and (X.shape == X2.shape) and (X == X2).all():
             X2 = None
@@ -1568,6 +1627,9 @@ class SOAP(Kern):
             dpss_dalpha = []
             pss = []
             for i in range(X.shape[0]):
+                if self.verbosity > 1:
+                    self.print('\rPow. spec. {:02}/{:02}: '.format(i + 1, X.shape[0]), end='')
+                    sys.stdout.flush()
                 if self.materials is not None:
                     species = material_elements[material_id[i]]
 
@@ -1627,19 +1689,17 @@ class SOAP(Kern):
                     else:
                         kappa = kappa_full
                     if self.verbosity > 1:
-                        # self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' *
-                        #            (d1 - d2 - 1) + '1 ', end='')
                         self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                         sys.stdout.flush()
                     if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
-                        K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
+                        # K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
+                        K01 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d2]).real, kappa, kappa)
                         self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]] = self.Kcross_buffer[
                             self.idx2folder[d2] + '-' + self.idx2folder[d1]] = K01
                     else:
                         K01 = self.Kcross_buffer[self.idx2folder[d1] + '-' + self.idx2folder[d2]]
 
                     rK01 = self.K_reduction(K01)
-
                     Kij = rK01 / np.sqrt(rK00[d1] * rK00[d2])
 
                     Klocal[d1 - offsets[rank], d2] = Kij
@@ -1683,13 +1743,17 @@ class SOAP(Kern):
                         else:
                             kappa = kappa_full
                         if self.verbosity > 1:
-                            #self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (
-                            #           d1 - d2 - 1) + '1 ', end='')
                             self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                             sys.stdout.flush()
 
-                        dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss[d2], kappa, kappa).real + \
-                               np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d2][:, s1], kappa, kappa).real
+                        #dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss[d2], kappa, kappa).real + \
+                        #       np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss_dalpha[d2][:, s1], kappa, kappa).real
+                        dK01 = np.einsum('ijkmno, jn, ko',
+                                         np.einsum('ijkl, mnol', dpss_dalpha[d1][:, s1], pss[d2]).real,
+                                         kappa, kappa) + \
+                               np.einsum('ijkmno, jn, ko',
+                                         np.einsum('ijkl, mnol', pss[d1], dpss_dalpha[d2][:, s1]).real,
+                                         kappa, kappa)
 
                         rdK01 = self.K_reduction(dK01)
                         rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK00[d2])
@@ -1740,7 +1804,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                self.print('\rPow. spec. 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end='');
+                self.print('\rPow. spec. 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end='')
                 sys.stdout.flush()
             nl1[i].update(X[i, 0])
             p, dp = self.get_all_power_spectrums(X[i, 0], nl1[i], species, True)
@@ -1768,7 +1832,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                print('\rPow. spec. {:02}/{:02}'.format(i + 1, X2.shape[0]), end='');
+                print('\rPow. spec. 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end='')
                 sys.stdout.flush()
             nl2[i].update(X2[i, 0])
             p, dp = self.get_all_power_spectrums(X2[i, 0], nl2[i], species, True)
@@ -1832,11 +1896,11 @@ class SOAP(Kern):
                 else:
                     kappa = kappa_full
                 if self.verbosity > 1:
-                    # self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (X2.shape[0] - d2 - 1), end='')
                     self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                     sys.stdout.flush()
 
-                K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
+                # K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
+                K01 = np.einsum('ijkmno, jn, ko', np.einsum('ijkl, mnol', pss[d1], pss[d2]).real, kappa, kappa)
                 rK01 = self.K_reduction(K01)
 
                 Kij = rK01 / np.sqrt(rK00[d1] * rK11[d2])
@@ -1936,19 +2000,24 @@ class SOAP(Kern):
 
         # Compute dK/d\alpha(X, X2)
         for s1 in range(n_species):
-            for d1 in range(chunk[0], chunk[1]):  # X.shape[0]):
+            for d1 in range(chunk[0], chunk[1]):
                 for d2 in range(X2.shape[0]):
                     if self.materials is not None:
                         kappa = kappa_all[(material_id[d1], material_id2[d2])]
                     else:
                         kappa = kappa_full
                     if self.verbosity > 1:
-                        # self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]) + 'x ' * (d2 + 1) + '. ' * (X2.shape[0] - d2 - 1), end='')
                         self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
                         sys.stdout.flush()
 
-                    dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss2[d2], kappa, kappa).real + \
-                           np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss2_dalpha[d2][:, s1], kappa, kappa).real
+                    # dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss2[d2], kappa, kappa).real + \
+                    #        np.einsum('ijkl, mnol, jn, ko', pss[d1], dpss2_dalpha[d2][:, s1], kappa, kappa).real
+                    dK01 = np.einsum('ijkmno, jn, ko',
+                                     np.einsum('ijkl, mnol', dpss_dalpha[d1][:, s1], pss2[d2]).real,
+                                     kappa, kappa) + \
+                           np.einsum('ijkmno, jn, ko',
+                                     np.einsum('ijkl, mnol', pss[d1], dpss2_dalpha[d2][:, s1]).real,
+                                     kappa, kappa)
 
                     rdK01 = self.K_reduction(dK01)
                     rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK11[d2])
