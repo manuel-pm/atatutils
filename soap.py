@@ -538,11 +538,12 @@ class SOAP(Kern):
             parallel = True
         if parallel:
             from mpi4py import MPI
+            self.MPI = MPI
             from utils.parprint import parprint
             self.print = parprint
             self.parallel_cnlm = True
             if mpi_comm is None:
-                mpi_comm = MPI.COMM_WORLD
+                mpi_comm = self.MPI.COMM_WORLD
         if mpi_comm is not None:
             self.comm = mpi_comm
             self.size = self.comm.Get_size()
@@ -553,6 +554,7 @@ class SOAP(Kern):
             self.rank = 0
             self.print = print
 
+        self.print(parallel, mpi_comm, self.parallel_cnlm)
         self.optimize_sigma = optimize_sigma
         self.derivative = False
         self.num_diff = num_diff
@@ -776,7 +778,7 @@ class SOAP(Kern):
 
         if self.parallel_cnlm:
             from mpi4py import MPI
-
+            comm = MPI.COMM_WORLD
             lchunk, chunksizes, offsets = partition1d(self.n_max*self.l_max*self.l_max, self.rank, self.size)
 
             for idx in range(lchunk[0], lchunk[1]):
@@ -793,10 +795,10 @@ class SOAP(Kern):
                     if derivative:
                         dc_nlm[idx] += np.dot(self.Gr2dr[n], dI_01)  # \sum_i\int r^2 g_n(r) c^i_{lm}(r)'\,dr
 
-            self.comm.Allgatherv(c_nlm[lchunk[0]: lchunk[1]],
+            comm.Allgatherv(c_nlm[lchunk[0]: lchunk[1]],
                             [c_nlm, chunksizes, offsets, MPI.DOUBLE_COMPLEX])
             if derivative:
-                self.comm.Allgatherv(dc_nlm[lchunk[0]: lchunk[1]],
+                comm.Allgatherv(dc_nlm[lchunk[0]: lchunk[1]],
                                 [dc_nlm, chunksizes, offsets, MPI.DOUBLE_COMPLEX])
 
         else:
@@ -1347,8 +1349,6 @@ class SOAP(Kern):
             start = timer()
             chunk, chunksizes, offsets = partition_ltri_rows(X.shape[0], self.rank, self.size)
             if self.parallel_cnlm:
-                from mpi4py import MPI
-
                 Klocal = np.zeros((chunksizes[self.rank], X.shape[0]))
                 for i in range(chunk[0], chunk[1]):
                     Klocal[i - offsets[self.rank], i] = 1.
@@ -1392,7 +1392,7 @@ class SOAP(Kern):
                     Klocal[d1 - offsets[self.rank], d2] = Kij
 
             if self.parallel_cnlm:
-                self.comm.Allgatherv(Klocal, [K, chunksizes * X.shape[0], offsets * X.shape[0], MPI.DOUBLE])
+                self.comm.Allgatherv(Klocal, [K, chunksizes * X.shape[0], offsets * X.shape[0], self.MPI.DOUBLE])
 
             if self.verbosity > 1:
                 self.print('', end='\r')
@@ -1472,8 +1472,6 @@ class SOAP(Kern):
         start = timer()
         chunk, chunksizes, offsets = partition1d(X.shape[0], self.rank, self.size)
         if self.parallel_cnlm:
-            from mpi4py import MPI
-
             Klocal = np.zeros((chunksizes[self.rank], X2.shape[0]))
             self.comm.barrier()  # make sure all pss are available
         else:
@@ -1525,7 +1523,7 @@ class SOAP(Kern):
             self.print('')
 
         if self.parallel_cnlm:
-            self.comm.Allgatherv(Klocal, [K, chunksizes * X2.shape[0], offsets * X2.shape[0], MPI.DOUBLE])
+            self.comm.Allgatherv(Klocal, [K, chunksizes * X2.shape[0], offsets * X2.shape[0], self.MPI.DOUBLE])
 
         self.Km = np.power(K, self.exponent)
         self.reduction_times_X_X2.append(timer() - start)
@@ -1645,8 +1643,6 @@ class SOAP(Kern):
             dK_s = np.zeros((X.shape[0], X.shape[0]))
             chunk, chunksizes, offsets = partition_ltri_rows(X.shape[0], self.rank, self.size)
             if self.parallel_cnlm:
-                from mpi4py import MPI
-
                 Klocal = np.zeros((chunksizes[self.rank], X.shape[0]))
                 for i in range(chunk[0], chunk[1]):
                     Klocal[i - offsets[self.rank], i] = 1.
@@ -1694,7 +1690,7 @@ class SOAP(Kern):
                     Klocal[d1 - offsets[self.rank], d2] = Kij
 
             if self.parallel_cnlm:
-                self.comm.Allgatherv(Klocal, [K, chunksizes * X.shape[0], offsets * X.shape[0], MPI.DOUBLE])
+                self.comm.Allgatherv(Klocal, [K, chunksizes * X.shape[0], offsets * X.shape[0], self.MPI.DOUBLE])
 
             # Compute kernel matrix derivatives
             # dK/d\alpha(X, X)
@@ -1720,7 +1716,7 @@ class SOAP(Kern):
                            np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d][:, s], pss[d], kappa, kappa).real
                     rdK00local[d - offsets1d[self.rank]] = self.K_reduction(dK00)
                 if self.parallel_cnlm:
-                    self.comm.Allgatherv(rdK00local, [rdK00_s, chunksizes1d, offsets1d, MPI.DOUBLE])
+                    self.comm.Allgatherv(rdK00local, [rdK00_s, chunksizes1d, offsets1d, self.MPI.DOUBLE])
                 rdK00[s, :] = rdK00_s
 
             # Compute dk_d\alpha(X, X)
@@ -1755,7 +1751,7 @@ class SOAP(Kern):
                         dK_slocal[d1 - offsets[self.rank], d2] = dKij
 
                 if self.parallel_cnlm:
-                    self.comm.Allgatherv(dK_slocal, [dK_s, chunksizes * X.shape[0], offsets * X.shape[0], MPI.DOUBLE])
+                    self.comm.Allgatherv(dK_slocal, [dK_s, chunksizes * X.shape[0], offsets * X.shape[0], self.MPI.DOUBLE])
                 dK_dalpha[s1, :, :] = dK_s
 
             if self.verbosity > 1:
@@ -1842,8 +1838,6 @@ class SOAP(Kern):
         dK_s = np.zeros((X.shape[0], X2.shape[0]))
         chunk, chunksizes, offsets = partition1d(X.shape[0], self.rank, self.size)
         if self.parallel_cnlm:
-            from mpi4py import MPI
-
             Klocal = np.zeros((chunksizes[self.rank], X2.shape[0]))
             dK_slocal = np.zeros((chunksizes[self.rank], X2.shape[0]))
             self.comm.barrier()  # make sure all pss are available
@@ -1889,7 +1883,7 @@ class SOAP(Kern):
                 Klocal[d1 - offsets[self.rank], d2] = Kij
 
         if self.parallel_cnlm:
-            self.comm.Allgatherv(Klocal, [K, chunksizes * X2.shape[0], offsets * X2.shape[0], MPI.DOUBLE])
+            self.comm.Allgatherv(Klocal, [K, chunksizes * X2.shape[0], offsets * X2.shape[0], self.MPI.DOUBLE])
 
         # Compute kernel matrix derivatives
         # FIXME: kappa derivative
@@ -2011,7 +2005,7 @@ class SOAP(Kern):
                     dK_slocal[d1 - offsets[self.rank], d2] = dKij
 
             if self.parallel_cnlm:
-                self.comm.Allgatherv(dK_slocal, [dK_s, chunksizes * X2.shape[0], offsets * X2.shape[0], MPI.DOUBLE])
+                self.comm.Allgatherv(dK_slocal, [dK_s, chunksizes * X2.shape[0], offsets * X2.shape[0], self.MPI.DOUBLE])
             dK_dalpha[s1, :, :] = dK_s
 
         if self.verbosity > 1:
