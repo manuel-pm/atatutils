@@ -779,7 +779,16 @@ class SOAP(Kern):
         if self.parallel_cnlm:
             from mpi4py import MPI
             comm = MPI.COMM_WORLD
-            lchunk, chunksizes, offsets = partition1d(self.n_max*self.l_max*self.l_max, self.rank, self.size)
+            #lchunk, chunksizes, offsets = partition1d(self.n_max*self.l_max*self.l_max, self.rank, self.size)
+
+            chunksize = (self.n_max * self.l_max * self.l_max) / self.size
+            leftover = (self.n_max * self.l_max * self.l_max) % self.size
+            chunksizes = np.ones(self.size, dtype=int) * chunksize
+            chunksizes[:leftover] += 1
+            offsets = np.zeros(self.size, dtype=int)
+            offsets[1:] = np.cumsum(chunksizes)[:-1]
+            # Local update
+            lchunk = [offsets[self.rank], offsets[self.rank] + chunksizes[self.rank]]
 
             for idx in range(lchunk[0], lchunk[1]):
                 n = idx / (self.l_max*self.l_max)
