@@ -3,3 +3,4 @@ __pycache__/
 .idea/
 *conflicted*
 /phasediagram
+/soap_old.py
