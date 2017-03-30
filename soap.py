@@ -557,7 +557,6 @@ class SOAP(Kern):
             self.mpi_rank = 0
             self.print = print
 
-        print(self.mpi_rank, self.mpi_size, parallel, mpi_comm, self.parallel_cnlm)
         self.optimize_sigma = optimize_sigma
         self.derivative = False
         self.num_diff = num_diff
