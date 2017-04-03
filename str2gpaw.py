@@ -1,42 +1,45 @@
-"""
- Utility class and functions to read/write ATAT structure files and setup
- an Atoms object that can be used to run a DFT simulation of the structure.
- The class ATAT2GPAW assumes that the k-points for the calculator can be set as
-  self.calc.set(kpts={'size': kpts, 'gamma': True})
- where kpts is a tuple with three elements containing the number of k points
- in the x, y and z directions.
+"""Utility class and functions to read/write ATAT structure files and setup
+an Atoms object that can be used to run a DFT simulation of the structure.
 
- Example usage:
+Notes
+-----
+The class ATAT2GPAW assumes that the k-points for the calculator can be set as
+ self.calc.set(kpts={'size': kpts, 'gamma': True})
+where kpts is a tuple with three elements containing the number of k points
+in the x, y and z directions.
+To just parse the ATAT input file into an ase.Atoms object, use read_atat_input.
 
-    from gpaw import GPAW, PW, Mixer, FermiDirac
-    from gpaw.eigensolvers import CG
-    from gpaw.poisson import PoissonSolver
+Example
+-------
 
-    xcf = 'PBE'
-    # xcf = 'mBEEF-WCPM'
-    fmm = True
-    calc = GPAW(mode=PW(400),
-                h=0.10,
-                xc=xcf,
-                occupations=FermiDirac(0.05, fixmagmom=fmm),
-                eigensolver=CG(niter=5, rtol=0.15),
-                poissonsolver=PoissonSolver(nn=3, relax='J', eps=1e-12),
-                convergence={'energy': 0.0005,
-                             'bands': 'all',
-                             'density': 1.e-4,
-                             'eigenstates': 1.e-4
-                             },
-                mixer=Mixer(0.055, 3, 50))
+from ase.optimize.bfgs import BFGS
+from gpaw import GPAW, PW, Mixer, FermiDirac
+from gpaw.eigensolvers import CG
+from gpaw.poisson import PoissonSolver
 
-    cv = ATAT2GPAW('str.out', calc)
-    cv.atoms.get_potential_energy()
-    opt = BFGS(cv.atoms)
-    opt.run(0.05)
+xcf = 'PBE'
+fmm = True
+calc = GPAW(mode=PW(400),
+            h=0.10,
+            xc=xcf,
+            occupations=FermiDirac(0.05, fixmagmom=fmm),
+            eigensolver=CG(niter=5, rtol=0.15),
+            poissonsolver=PoissonSolver(nn=3, relax='J', eps=1e-12),
+            convergence={'energy': 0.0005,
+                         'bands': 'all',
+                         'density': 1.e-4,
+                         'eigenstates': 1.e-4
+                         },
+            mixer=Mixer(0.055, 3, 50))
 
-    ofile = open(os.path.join('.', 'energy'), 'wb')
+cv = ATAT2GPAW('str.out', calc)
+cv.atoms.get_potential_energy()
+opt = BFGS(cv.atoms)
+opt.run(0.05)
 
+with open(os.path.join('.', 'energy'), 'wb') as ofile:
     ofile.write(str(cv.atoms.get_potential_energy()))
-    ofile.close()
+
 """
 
 from __future__ import print_function
@@ -57,8 +60,6 @@ from ase.optimize.fire import FIRE as ASEFIRE
 from ase.optimize.lbfgs import LBFGS as ASELBFGS
 from ase.parallel import barrier, parprint, paropen, rank
 from ase.optimize.precon import Exp, PreconLBFGS, PreconFIRE
-# import ase.utils.geometry as ase_geometry
-import ase.build as ase_geometry
 
 
 def read_lattice_file(filename='lat.in', pbc=(1, 1, 1), verbosity=0,
@@ -218,7 +219,7 @@ def read_atat_input(filename='str.out', pbc=(1, 1, 1), verbosity=0,
     # Modify cell to the maximally-reduced Niggli unit cell or minimize tilt
     #    angle between cell axes. Niggli takes precedence.
     if niggli_reduce:
-        ase_geometry.niggli_reduce(atoms)
+        ase.build.niggli_reduce(atoms)
         if verbosity > 0:
             parprint("Niggli cell:\n {}".format(atoms.get_cell()))
             parprint("N. cell volume: {}".format(np.linalg.det(atoms.get_cell())))
@@ -230,7 +231,7 @@ def read_atat_input(filename='str.out', pbc=(1, 1, 1), verbosity=0,
             copyfile('str_niggli.out', 'str.out')
         barrier()
     elif minimize_tilt:
-        ase_geometry.minimize_tilt(atoms)
+        ase.build.minimize_tilt(atoms)
         if verbosity > 0:
             parprint("Minimum tilt cell:\n {}".format(atoms.cell))
             parprint("M. T. cell volume: {}".format(np.linalg.det(atoms.cell)))
