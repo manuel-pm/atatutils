@@ -48,6 +48,7 @@ from shutil import copyfile
 
 import numpy as np
 
+import ase
 from ase import Atoms
 from ase.calculators.calculator import Parameters
 from ase.constraints import UnitCellFilter
@@ -61,7 +62,7 @@ import ase.build as ase_geometry
 
 
 def read_lattice_file(filename='lat.in', pbc=(1, 1, 1), verbosity=0,
-                    minimize_tilt=False, niggli_reduce=False):
+                      minimize_tilt=False, niggli_reduce=False):
     """ Reads an ATAT lattice file (lat.in) and returns the cell, positions and
     atom types """
     if verbosity > 1:
@@ -79,18 +80,18 @@ def read_lattice_file(filename='lat.in', pbc=(1, 1, 1), verbosity=0,
         cs[1, :] = np.array(ifile.readline().split())
         cs[2, :] = np.array(ifile.readline().split())
     else:
-        #print("WARNING: [a, b, c, alpha, beta, gamma] format" +
-        #      " not well tested")
+        # print("WARNING: [a, b, c, alpha, beta, gamma] format" +
+        #       " not well tested")
         a, b, c, alpha, beta, gamma = items
         alpha, beta, gamma = [angle*np.pi/180.
                               for angle in [alpha, beta, gamma]]
         (ca, sa) = (math.cos(alpha), math.sin(alpha))
         (cb, sb) = (math.cos(beta),  math.sin(beta))
         (cg, sg) = (math.cos(gamma), math.sin(gamma))
-        # Vunit is a volume of unit cell with a=b=c=1
-        Vunit = math.sqrt(1.0 + 2.0*ca*cb*cg - ca*ca - cb*cb - cg*cg)
+        # v_unit is a volume of unit cell with a=b=c=1
+        v_unit = math.sqrt(1.0 + 2.0*ca*cb*cg - ca*ca - cb*cb - cg*cg)
         # from the reciprocal lattice
-        ar = sa/(a*Vunit)
+        ar = sa/(a*v_unit)
         cgr = (ca*cb - cg)/(sa*sb)
         sgr = math.sqrt(1.0 - cgr**2)
         cs[0, :] = np.array([1.0/ar, -cgr/sgr/ar, cb*a])
@@ -162,18 +163,18 @@ def read_atat_input(filename='str.out', pbc=(1, 1, 1), verbosity=0,
         cs[1, :] = np.array(ifile.readline().split())
         cs[2, :] = np.array(ifile.readline().split())
     else:
-        #print("WARNING: [a, b, c, alpha, beta, gamma] format" +
-        #      " not well tested")
+        # print("WARNING: [a, b, c, alpha, beta, gamma] format" +
+        #       " not well tested")
         a, b, c, alpha, beta, gamma = items
         alpha, beta, gamma = [angle*np.pi/180.
                               for angle in [alpha, beta, gamma]]
         (ca, sa) = (math.cos(alpha), math.sin(alpha))
         (cb, sb) = (math.cos(beta),  math.sin(beta))
         (cg, sg) = (math.cos(gamma), math.sin(gamma))
-        # Vunit is a volume of unit cell with a=b=c=1
-        Vunit = math.sqrt(1.0 + 2.0*ca*cb*cg - ca*ca - cb*cb - cg*cg)
+        # v_unit is a volume of unit cell with a=b=c=1
+        v_unit = math.sqrt(1.0 + 2.0*ca*cb*cg - ca*ca - cb*cb - cg*cg)
         # from the reciprocal lattice
-        ar = sa/(a*Vunit)
+        ar = sa/(a*v_unit)
         cgr = (ca*cb - cg)/(sa*sb)
         sgr = math.sqrt(1.0 - cgr**2)
         cs[0, :] = np.array([1.0/ar, -cgr/sgr/ar, cb*a])
@@ -421,7 +422,7 @@ class ATAT2GPAW:
         relax.attach(lambda: write_atat_input(self.atoms, 'str_last.out'))
         relax.run(fmax=fmax, steps=100)
         if not relax.converged():
-            relax = LBFGS(self.atoms)
+            relax = ASELBFGS(self.atoms)
             relax.run(fmax=fmax, steps=100)
             if not relax.converged():
                 max_force = self.atoms.get_forces()
