@@ -24,7 +24,7 @@ class ATATFolderParser(object):
     ----------
     base_dir : str
         Reference path for folder names.
-    condentrations : dict of dict from structure to triplet
+    concentrations : dict of dict from structure to triplet
         For each folder, for each structure, a triplet containing
         the total number of atoms, the number of atoms of each species
         and the concentration of each species.
@@ -72,7 +72,7 @@ class ATATFolderParser(object):
         |_ ...
 
     """
-    def __init__(self, base_dir='.'):
+    def __init__(self, base_dir=''):
         self.base_dir = base_dir
         self.concentrations = {}
         self.elements = {}
@@ -80,7 +80,7 @@ class ATATFolderParser(object):
         self.lattice = {}
         self.structures = {}
 
-    def add_folder(self, folder, descriptor_file=None, filters=[is_int]):
+    def add_folder(self, folder, descriptor_file=None, filters=(is_int,)):
         """Adds a new folder and parses it.
 
         Parameters
@@ -89,11 +89,8 @@ class ATATFolderParser(object):
             Name of folder to add.
         descriptor_file : str, optional
             Name of YAML descriptor file with folder properties.
-        filters : list of callables
+        filters : tuple of callables
             Filters that the structure folders must satisfy.
-
-        Returns
-        -------
 
         """
         self.folders.append(folder)
@@ -110,20 +107,22 @@ class ATATFolderParser(object):
             structures = ['0', '1']  # FIXME: Assumes binary alloy
             for structure in structures:
                 str_out = open(os.path.join(self.base_dir, folder, structure, 'str.out'))
+                elem = 'None'
                 for line in str_out.readlines():
                     v = line.split()
                     if len(v) == 4:
                         elem = v[-1]
                 str_out.close()
+                assert elem != 'None'
                 self.elements[folder].append((elem, structure))
 
             lattice_file = 'lat.in'
 
         self.lattice[folder] = ATATLattice(base_dir=folder, lattice_file=lattice_file)
 
-        self.structures[folder]  = [d for d in os.listdir(os.path.join(self.base_dir, folder)) if
-                                    os.path.isdir(os.path.join(self.base_dir, folder, d))
-                                    and all([f(d) for f in filters])]
+        self.structures[folder] = [d for d in os.listdir(os.path.join(self.base_dir, folder)) if
+                                   os.path.isdir(os.path.join(self.base_dir, folder, d))
+                                   and all([f(d) for f in filters])]
         self.structures[folder].sort(key=int)
 
         self.concentrations[folder] = {}
@@ -151,7 +150,7 @@ class ATATFolderParser(object):
             Properties requested.
         folders : list of str, optional
             Folders whose structures will be included.
-             If not specified, use all parsed folders.
+            If not specified, use all folders of structures to parse.
         structures : dict of list of str, optional
             Dictionary with all the structures for at least the
             requested folders. If not specified, use all parsed structures.
@@ -163,16 +162,18 @@ class ATATFolderParser(object):
             the desired property files.
 
         """
-        if folders is None:
-            folders = self.folders
         if structures is None:
             structures = self.structures
+        if folders is None:
+            folders = structures.keys()
+        else:
+            folders = [folder for folder in folders if folder in structures.keys()]
         filtered_structures = {}
         if isinstance(properties, string_types):
-            property = [properties]
+            properties = [properties]
         for folder in folders:
             filters = []
-            for p in property:
+            for p in properties:
                 filters.append(make_has_file(os.path.join(self.base_dir, folder), p))
                 filtered_structures[folder] = []
             for structure in structures[folder]:
@@ -188,7 +189,7 @@ class ATATFolderParser(object):
         ----------
         folders : list of str, optional
             Folders whose structures will be included.
-             If not specified, use all parsed folders.
+             If not specified, use all folders of the structures to parse.
         structures : dict of list of str, optional
             Dictionary with all the structures for at least the
             requested folders. If not specified, use all parsed structures.
@@ -199,10 +200,12 @@ class ATATFolderParser(object):
             List with all the structures (full path) in all the folders.
 
         """
-        if folders is None:
-            folders = self.folders
         if structures is None:
             structures = self.structures
+        if folders is None:
+            folders = structures.keys()
+        else:
+            folders = [folder for folder in folders if folder in structures.keys()]
         all_structures = []
         for folder in folders:
             all_structures += [os.path.join(self.base_dir, folder, s) for s in structures[folder]]
@@ -221,7 +224,7 @@ class ATATFolderParser(object):
             Whether the property is intensive.
         folders : list of str, optional
             Folders whose properties will be included.
-             If not specified, use all parsed folders.
+             If not specified, use all folders of the structures to parse.
         structures : dict of list of str, optional
             Dictionary with all the structures for at least the
             requested folders. If not specified, use all parsed structures
@@ -247,10 +250,12 @@ class ATATFolderParser(object):
         get_parametric_property
 
         """
-        if folders is None:
-            folders = self.folders
         if structures is None:
             structures = self.structures
+        if folders is None:
+            folders = structures.keys()
+        else:
+            folders = [folder for folder in folders if folder in structures.keys()]
         filtered_structures = self.structures_with_property(property, folders, structures)
         Y = []
         for folder in folders:
@@ -300,7 +305,7 @@ class ATATFolderParser(object):
             Whether the property is intensive.
         folders : list of str, optional
             Folders whose properties will be included.
-             If not specified, use all parsed folders.
+             If not specified, use all folders of the structures to parse.
         structures : dict of list of str, optional
             Dictionary with all the structures for at least the
             requested folders. If not specified, use all parsed structures
@@ -323,10 +328,12 @@ class ATATFolderParser(object):
         then you should use get_property.
 
         """
-        if folders is None:
-            folders = self.folders
         if structures is None:
             structures = self.structures
+        if folders is None:
+            folders = structures.keys()
+        else:
+            folders = [folder for folder in folders if folder in structures.keys()]
         filtered_structures = self.structures_with_property(property, folders, structures)
         Y = []
         X = []
@@ -379,6 +386,7 @@ class ATATFolderParser(object):
             Values of the parameter as described by the parameter file.
 
         """
+        t = None
         if parameter.lower() in ['t', 'temperature']:
             t_param = np.loadtxt(os.path.join(self.base_dir, folder, 'Trange.in'))
             t_max = t_param[0]
@@ -388,7 +396,8 @@ class ATATFolderParser(object):
             print('Error: unknown parameter file for {}'.format(parameter))
         return t
 
-    def split_in_subsets(self, fractions, folders=None, structures=None, replace=False, force_pures_in_first=False):
+    def split_in_subsets(self, fractions, folders=None, structures=None,
+                         replace=False, force_pures_in_first=False):
         """Split the structures for the selected folders in groups with sizes
          calculated from fractions.
 
@@ -398,7 +407,7 @@ class ATATFolderParser(object):
             List with the fraction of data to be included in each subset.
         folders : list of str, optional
             Folders whose properties will be included.
-             If not specified, use all parsed folders.
+             If not specified, use all folders of the structures to parse.
         structures : dict of list of str, optional
             Dictionary with all the structures for at least the
             requested folders. If not specified, use all parsed structures
@@ -414,10 +423,12 @@ class ATATFolderParser(object):
         list of dict of list of str
             List with the subset structures.
         """
-        if folders is None:
-            folders = self.folders
         if structures is None:
             structures = self.structures
+        if folders is None:
+            folders = structures.keys()
+        else:
+            folders = [folder for folder in folders if folder in structures.keys()]
         assert (0. < np.sum(fractions) <= 1.)
 
         n_sets = len(fractions)
@@ -441,7 +452,7 @@ class ATATFolderParser(object):
                         indices.remove(pi)
                     indices = pure_element_index + indices
                 start = 0
-                print(n_structures[folder])
+                # print(n_structures[folder])
                 for i, f in enumerate(n_structures[folder]):
                     idx = np.sort(indices[start: start + f])
                     list_of_structures[i][folder] = list(np.array(structures[folder])[idx])
