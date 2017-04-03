@@ -133,6 +133,7 @@ def sympy_dG_dalpha(n_max, delta_r, alpha, x, r_cut):
 
 
 def fcut(rcut, rdelta, r):
+    """Smooth radial cut-off function with parameters rcut, rdelta."""
     if r <= rcut-rdelta:
         return 1.
     elif r <= rcut:
@@ -141,6 +142,25 @@ def fcut(rcut, rdelta, r):
 
 
 def nearest_neighbour_distance(atoms, which=0, largest=False):
+    """Nearest neighbor distance between the atoms.
+
+    Parameters
+    ----------
+    atoms : ase.Atoms object
+        Atoms object where we look for the nearest neighbor distance.
+    which : int >= 0
+        Atom with respect to which we look for the NND.
+    largest : bool, optional
+        If True, return the maximum NND in the system. This
+        ensures every atom in the system has at least one neighbor
+        within a distance nnd.
+
+    Returns
+    -------
+    nnd : float > 0
+        NND of atom which or maximum nearest neighbor distance of all atoms.
+
+    """
     # Neighbour list of size given by the cell. Always contains some atom
     nl = ase.neighborlist.NeighborList([np.min(np.linalg.norm(atoms.cell, axis=1))] * atoms.positions.shape[0],
                                        self_interaction=False)
@@ -198,14 +218,35 @@ def c_ilm2(l, m, alpha, ar2g2, thetai, phii, arg, derivative=False):
 
 
 def sum_squares_odd_integers(n):
+    """Sum of the squares of the first n odd integers.
+
+    """
     return n * (2 * n + 1) * (2 * n - 1) / 3
 
 
 def sum_odd_integers(n):
+    """Sum of the first n odd integers.
+
+    """
     return (n + 1)**2
 
 
 def cart2sph(coords):
+    """Change coordinates from cartesian to spherical.
+
+    Parameters
+    ----------
+    coords : 2-D np.ndarray of float > 0
+        2-D array of shape (N, 3) with the Cartesian coordinates
+        of the points.
+
+    Returns
+    -------
+    r, theta, phi : 1-D np.ndarray of float
+        1-D arrays of shape (N,) with the spherical
+        coordinates of the points.
+
+    """
     r = np.linalg.norm(coords, axis=1)
     coords_hat = np.zeros_like(coords)
     theta = np.zeros(r.shape[0])
@@ -218,6 +259,22 @@ def cart2sph(coords):
 
 
 def sph2cart(r, theta, phi):
+    """Change coordinates from spherical to cartesian.
+
+    Parameters
+    ----------
+    r : 1-D np.ndarray of float > 0
+        1-D array of shape (N,) with radial coordinates.
+    theta : 1-D np.ndarray of float
+
+    phi : 1-D np.ndarray of float
+
+    Returns
+    -------
+    x, y, z : 1-D np.ndarray of float
+        Cartesian coordinates of the points.
+
+    """
     rsin_theta = r * np.sin(theta)
     x = rsin_theta * np.cos(phi)
     y = rsin_theta * np.sin(phi)
@@ -226,12 +283,53 @@ def sph2cart(r, theta, phi):
 
 
 def dirac_delta(i, j):
+    """Dirac delta symbol between i and j.
+
+    Parameters
+    ----------
+    i
+        Object to be compared with j.
+    j
+        Object to be compared with i.
+
+    Returns
+    -------
+    int {0, 1}
+        1 if i==j and 0 otherwise.
+
+    Notes
+    -----
+    The only condition to use the function is that
+    the operator `==` must be defined between i and j.
+
+    """
     if i == j:
         return 1
     return 0
 
 
 def partition1d(ndata, rank, size):
+    """Partitions a 1D array of size ndata between size processes.
+
+    Parameters
+    ----------
+     ndata : int > 0
+        Number of elements of the array.
+    rank : int >=0
+        Rank (id) of the process.
+    size : int >=0
+        Number of processes.
+
+    Returns
+    -------
+    lchunk : list of 2 int
+        Indices (first and one past last) of the chunk for process rank.
+    chunksizes : 1-D ndarray of int
+        Size (in rows) of all the chunks.
+    offsets : 1-D ndarray of int
+        Offsets (in rows) of all the chunks.
+
+    """
     base = ndata / size
     leftover = ndata % size
     chunksizes = np.ones(size, dtype=int) * base
