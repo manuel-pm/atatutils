@@ -10,6 +10,8 @@ class ClustersFileParser(object):
     Parses and prints info about "clusters.out"
     files from ATAT.
 
+    Notes
+    -----
     A "cluster orbit" (also called a cluster family)
     is simply a collection of symmetrically equivalent
     clusters. This is really what the clusters.out file
