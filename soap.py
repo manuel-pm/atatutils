@@ -592,6 +592,7 @@ class SOAP(Kern):
         ----------
         n_points : int >= 0, optional
             Number of points in the radial grid (defaults to self.n_max).
+
         """
         if n_points is None:
             self.r_grid = np.array([self.delta_r*i for i in range(self.n_max)])
