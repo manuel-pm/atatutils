@@ -7,9 +7,9 @@ import sys
 import numpy as np
 
 import ase
+import ase.build
 import ase.data
 from ase import Atoms
-import ase.build as ase_geometry
 
 
 class ATATCluster(object):
@@ -244,8 +244,9 @@ class ATATCluster(object):
         """
         Saves the cluster information to the Python pickle format.
         """
-        from six.moves import cPickle as pickle
-        pickle.dump(self._cluster_info, open(filename, 'w'))
+        import six
+
+        six.moves.cPickle.dump(self._cluster_info, open(filename, 'w'))
 
 
 class ATATLattice(object):
@@ -473,7 +474,7 @@ class ATATLattice(object):
                           cell=cell,
                           pbc=pbc)
             if all(pbc) and niggli:
-                ase_geometry.niggli_reduce(atoms)
+                ase.build.niggli_reduce(atoms)
             realizations.append(atoms)
         if n is None:
             return realizations[0]
@@ -807,7 +808,7 @@ class ATATStructure(object):
                       pbc=True)
 
         if niggli:
-            ase_geometry.niggli_reduce(atoms)
+            ase.build.niggli_reduce(atoms)
 
         return atoms
 
