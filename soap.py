@@ -344,6 +344,26 @@ def partition_utri_rows(nrows, rank, size):
 
 
 class miniAtoms(object):
+    """Minimal atoms class including only positions
+    and atomic numbers using the same ase.Atoms interface.
+
+    Attributes
+    ----------
+    numbers : 1-D np.ndarray of int
+        Atomic numbers of the represented atoms.
+    positions : 2-D np.ndarray of float
+        Positions of the represented atoms.
+
+    Parameters
+    ----------
+    atoms : ase.Atoms object, optional
+        ase.Atoms object to initialize from its positions and atomic numbers.
+    positions : 2-D np.ndarray of float, optional
+        Positions of the represented atoms.
+    numbers : 1-D np.ndarray of int, optional
+        Atomic numbers of the represented atoms.
+
+    """
     def __init__(self, atoms=None, positions=None, numbers=None):
         if atoms is not None:
             self.positions = np.copy(atoms.positions)
@@ -359,16 +379,118 @@ class miniAtoms(object):
         else:
             raise NotImplementedError('No initialization for miniAtoms using given inputs implemented')
 
+    def get_atomic_numbers(self):
+        """Get an array with atomic numbers.
+
+        Returns
+        -------
+        atomic_numbers : 1-D np.ndarray of int
+            Array of shape (N,) with atomic numbers.
+
+        """
+        return self.numbers.copy()
+
+    def set_atomic_numbers(self, atomic_numbers):
+        """Set atomic numbers to new values. The user is
+        responsible for keeping positions up to date as well.
+
+        Parameters
+        ----------
+        atomic_numbers : 1-D np.ndarray of int
+            Array of shape (N,) with atomic numbers.
+
+        """
+        assert len(atomic_numbers.shape) == 1
+        self.atomic_numbers = atomic_numbers
+
+    def get_positions(self):
+        """Get an array with positions.
+
+        Returns
+        -------
+        positions : 2-D np.ndarray of float
+            Array of shape (N, 3) with positions.
+
+        """
+        return self.positions.copy()
+
+    def set_positions(self, positions):
+        """Set positions to new values. The user is responsible
+        for keeping atomic numbers up to date as well.
+
+        Parameters
+        ----------
+        positions : 2-D np.ndarray of floats
+            Array of shape (N, 3) with positions.
+
+        """
+        assert positions.shape[1] == 3
+        self.positions = positions
+
     def __eq__(self, other):
-        return (self.positions == other.positions).all()
+        """Check for identity of two miniAtoms objects.
+
+        Parameters
+        ----------
+        other : ase.Atoms or miniAtoms object
+            Atoms to compare to.
+
+        Returns
+        -------
+        bool
+            True if both objects have the same positions
+            and atomic numbers.
+
+        Notes
+        -----
+        The comparision od the positions is done directly in float,
+        no tolerance is allowed.
+
+        """
+        return (self.positions == other.positions).all() and (self.numbers == other.numbers).all()
 
     def __ne__(self, other):
+        """
+
+        Parameters
+        ----------
+        other : ase.Atoms or miniAtoms object
+            Atoms to compare to.
+
+        Returns
+        -------
+        bool
+            False if both objects have the same positions
+            and atomic numbers.
+
+        Notes
+        -----
+        The comparision od the positions is done directly in float,
+        no tolerance is allowed.
+
+        """
         return not self.__eq__(other)
 
     def __len__(self):
+        """Length of the miniAtoms object, i.e., its number of atoms.
+
+        Returns
+        -------
+        int > 0
+            Number of atoms represented by the object.
+
+        """
         return self.positions.shape[0]
 
     def __getitem__(self, i):
+        """Return a subset of the atoms.
+
+        Parameters
+        ----------
+        i : int >= 0
+            Index or range of indices to select the subset of atoms.
+
+        """
         if isinstance(i, numbers.Integral):
             natoms = len(self)
             if i < -natoms or i >= natoms:
@@ -384,7 +506,15 @@ class miniAtoms(object):
             raise IndexError('Invalid index.')
 
     def __delitem__(self, i):
-        li = range(len(self))
+        """Delete a subset of the atoms.
+
+        Parameters
+        ----------
+        i : int >= 0
+            Index or range of indices to select the subset of atoms.
+
+        """
+        # li = range(len(self))
         if isinstance(i, int):
             i = np.array([i])
         if isinstance(i, list) and len(i) > 0:
@@ -395,6 +525,21 @@ class miniAtoms(object):
         mask[i] = False
         self.positions = self.positions[mask]
         self.numbers = self.numbers[mask]
+
+    def __repr__(self):
+        """Representation of the object as a string.
+
+        """
+        tokens = []
+        tokens.append('positions={}'.format(self.positions))
+        tokens.append('numbers={}'.format(self.numbers))
+        return '{}({})'.format(self.__class__.__name__, ', '.join(tokens))
+
+    def __str__(self):
+        """String with the positions and atomic numbers.
+
+        """
+        return '{}\n{}'.format(self.positions, self.numbers)
 
 
 class SOAP(Kern):
