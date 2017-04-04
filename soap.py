@@ -1606,7 +1606,7 @@ class SOAP(Kern):
                         load = k
                         break
                 if self.verbosity > 0 and load == -1:
-                    self.print('\rPow. spec. {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
+                    self.print('\rPS {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
 
                 # Load pss if available. Otherwise, calculate and save
                 if load >= 0:
@@ -1699,7 +1699,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                self.print('\rPow. spec. 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
+                self.print('\rPS 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
             # Load pss if available. Otherwise, calculate and save
             if load >= 0:
                 pss.append(self.pss_buffer[load][1])
@@ -1727,7 +1727,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                self.print('\rPow. spec. 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
+                self.print('\rPS 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
             # Load pss if available. Otherwise, calculate and save
             if load >= 0:
                 pss2.append(self.pss_buffer[load][1])
@@ -1898,7 +1898,7 @@ class SOAP(Kern):
             pss = []
             for i in range(X.shape[0]):
                 if self.verbosity > 1:
-                    self.print('\rPow. spec. {:02}/{:02}: '.format(i + 1, X.shape[0]), end='')
+                    self.print('\rPS {:02}/{:02}: '.format(i + 1, X.shape[0]), end='')
                     sys.stdout.flush()
                 if self.materials is not None:
                     species = material_elements[material_id[i]]
@@ -2066,7 +2066,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                self.print('\rPow. spec. 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end='')
+                self.print('\rPS 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end='')
                 sys.stdout.flush()
             nl1[i].update(X[i, 0])
             p, dp = self.get_all_power_spectrums(X[i, 0], nl1[i], species, True)
@@ -2094,7 +2094,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                print('\rPow. spec. 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end='')
+                print('\rPS 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end='')
                 sys.stdout.flush()
             nl2[i].update(X2[i, 0])
             p, dp = self.get_all_power_spectrums(X2[i, 0], nl2[i], species, True)
