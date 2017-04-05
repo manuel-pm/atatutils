@@ -12,6 +12,23 @@ from atatutils.file_parsers import ATATLattice
 
 
 def make_has_file(base_folder, property_file):
+    """Factory for functions that test a specific property
+    file in a given folder.
+    
+    Parameters
+    ----------
+    base_folder : str
+        Base path to prepend to the folder name.
+    property_file : str
+        File name to look for in folder.
+
+    Returns
+    -------
+    has_file : function
+        Function to determine whether the given folder has
+         the property file.
+
+    """
     def has_file(folder):
         return os.path.isfile(os.path.join(base_folder, folder, property_file))
     return has_file
@@ -429,7 +446,8 @@ class ATATFolderParser(object):
             folders = structures.keys()
         else:
             folders = [folder for folder in folders if folder in structures.keys()]
-        assert (0. < np.sum(fractions) <= 1.)
+        if not replace:
+            assert (0. < np.sum(fractions) <= 1.)
 
         n_sets = len(fractions)
         list_of_structures = []
