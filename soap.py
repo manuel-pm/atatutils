@@ -217,6 +217,208 @@ def c_ilm2(l, m, alpha, ar2g2, thetai, phii, arg, derivative=False):
     return I_01
 
 
+def get_cnlm(atoms, n_max, l_max, alpha, gr2dr, r_grid, derivative=False, mpi_comm=None):
+    r"""Calculate the coefficients of the expansion of the pseudo-density
+    for the given atomic environment.
+
+    Parameters
+    ----------
+    atoms : miniAtoms or ase.Atoms object
+        Object representing an atomic environment.
+    n_max : int > 0
+        Maximum order of the radial expansion.
+    l_max : int > 0
+        Maximum order of the angular expansion.
+    alpha : float > 0
+        Precision of the Gaussian representing the atoms.
+    gr2dr : 2-D np.ndarray of float
+        Array containing the radial basis functions, one per row,
+        evaluated at r_grid_points, such that
+        np.dot(gr2dr[n], v) \approx \int r^2 g_n(r) v(r) dr.
+    r_grid : 1-D np.ndarray
+        Radial mesh to evaluate the integrals.
+    derivative: bool
+        Whether to return the derivatives with respect to alpha
+    Returns
+    -------
+    c_nlm : 1-D ndarray of complex float
+        Contains the flattened array :math:`c_{nlm}`.
+    c_nlm : 1-D ndarray of complex float
+        Contains the flattened array :math:`\partial c_{nlm}/\partial \alpha`.
+    """
+    parallel = True
+    mpi_rank = 0
+    mpi_size = 1
+    if mpi_comm is None:
+        parallel = False
+    else:
+        mpi_rank = mpi_comm.Get_rank()
+        mpi_size = mpi_comm.Get_size()
+        from mpi4py import MPI
+
+    c_nlm = np.zeros(n_max * l_max * l_max, dtype=complex)
+    if derivative:
+        dc_nlm = np.zeros(n_max * l_max * l_max, dtype=complex)
+    r_cartesian = np.copy(atoms.positions)
+    r, theta, phi = cart2sph(r_cartesian)
+
+    r_grid2 = r_grid * r_grid
+    ar2g2 = np.empty((r.shape[0], r_grid2.shape[0]))
+    arg = np.empty((r.shape[0], r_grid2.shape[0]))
+    for a in range(r.shape[0]):
+        ar2g2[a] = alpha * (r[a] * r[a] + r_grid2)
+        arg[a] = 2. * alpha * r[a] * r_grid
+
+    I_all = np.zeros((sum_odd_integers(l_max - 1) * r.shape[0], r_grid.shape[0]), dtype=complex)
+    dI_all = np.zeros((sum_odd_integers(l_max - 1) * r.shape[0], r_grid.shape[0]), dtype=complex)
+    lchunk, chunksizes, offsets = partition1d(I_all.shape[0], mpi_rank, mpi_size)
+    if parallel:
+        I_local = np.zeros((chunksizes[mpi_rank], r_grid.shape[0]), dtype=complex)
+        dI_local = np.zeros((chunksizes[mpi_rank], r_grid.shape[0]), dtype=complex)
+    else:
+        I_local = I_all
+        dI_local = dI_all
+    for idx in range(lchunk[0], lchunk[1]):
+        l = int(np.sqrt(idx /r.shape[0]))
+        m = idx /r.shape[0] - l**2
+        a = idx % r.shape[0]
+        if derivative:
+            I_local[idx - offsets[mpi_rank]], dI_local[idx - offsets[mpi_rank]] = \
+                c_ilm2(l, m - l, alpha, ar2g2[a], theta[a], phi[a], arg[a], derivative)
+        else:
+            I_local[idx - offsets[mpi_rank]] = c_ilm2(l, m - l, alpha, ar2g2[a], theta[a], phi[a], arg[a])
+    if parallel:
+        mpi_comm.Allgatherv(I_local.ravel(),
+                            [I_all.ravel(), chunksizes * r_grid.shape[0],
+                             offsets * r_grid.shape[0], MPI.DOUBLE_COMPLEX])
+        if derivative:
+            mpi_comm.Allgatherv(dI_local.ravel(),
+                                [dI_all.ravel(), chunksizes * r_grid.shape[0],
+                                 offsets * r_grid.shape[0], MPI.DOUBLE_COMPLEX])
+
+    if parallel:
+        lchunk, chunksizes, offsets = partition1d(n_max * l_max * l_max, mpi_rank, mpi_size)
+
+        for idx in range(lchunk[0], lchunk[1]):
+            n = idx / (l_max * l_max)
+            nidx = idx % (l_max * l_max)
+            l = int(np.sqrt(nidx))
+            m = nidx - (l * (l + 1))
+            for a in range(r.shape[0]):
+                c_nlm[idx] += np.dot(gr2dr[n], I_all[(l**2 + m + l) * r.shape[0] + a])
+                if derivative:
+                    dc_nlm[idx] += np.dot(gr2dr[n], dI_all[(l**2 + m + l) * r.shape[0] + a])
+
+        mpi_comm.Allgatherv(c_nlm[lchunk[0]: lchunk[1]],
+                            [c_nlm, chunksizes, offsets, MPI.DOUBLE_COMPLEX])
+        if derivative:
+            mpi_comm.Allgatherv(dc_nlm[lchunk[0]: lchunk[1]],
+                                [dc_nlm, chunksizes, offsets, MPI.DOUBLE_COMPLEX])
+
+    else:
+        for a, n, l in itertools.product(range(r.shape[0]), range(n_max), range(l_max)):
+            for m in range(-l, l + 1):
+                idx = n * l_max * l_max + l * l + (m + l)
+                c_nlm[idx] += np.dot(gr2dr[n], I_all[(l ** 2 + m + l) * r.shape[0] + a])
+                if derivative:
+                    dc_nlm[idx] += np.dot(gr2dr[n], dI_all[(l ** 2 + m + l) * r.shape[0] + a])
+
+    if derivative:
+        return c_nlm, dc_nlm
+    return c_nlm
+
+
+def get_dcnlm_dalpha(atoms, n_max, l_max, alpha, gr2dr, r_grid, derivative=False, mpi_comm=None):
+    r"""Calculate the derivative of the coefficients of the expansion of the pseudo-density
+    for the given atomic environment.
+
+    Parameters
+    ----------
+    atoms : miniAtoms or ase.Atoms object
+        Object representing an atomic environment.
+    n_max : int > 0
+        Maximum order of the radial expansion.
+    l_max : int > 0
+        Maximum order of the angular expansion.
+    alpha : float > 0
+        Precision of the Gaussian representing the atoms.
+    gr2dr : 2-D np.ndarray of float
+        Array containing the radial basis functions, one per row,
+        evaluated at r_grid_points, such that
+        np.dot(gr2dr[n], v) \approx \int r^2 g_n(r) v(r) dr.
+    r_grid : 1-D np.ndarray
+        Radial mesh to evaluate the integrals.
+    derivative: bool
+        Whether to return the derivatives with respect to alpha
+    Returns
+    -------
+    c_nlm : 1-D ndarray of complex float
+        Contains the flattened array :math:`c_{nlm}`.
+    c_nlm : 1-D ndarray of complex float
+        Contains the flattened array :math:`\partial c_{nlm}/\partial \alpha`.
+    """
+    parallel = True
+    mpi_rank = 0
+    mpi_size = 1
+    if mpi_comm is None:
+        parallel = False
+    else:
+        mpi_rank = mpi_comm.Get_rank()
+        mpi_size = mpi_comm.Get_size()
+        from mpi4py import MPI
+
+    dc_nlm = np.zeros(n_max * l_max * l_max, dtype=complex)
+    r_cartesian = np.copy(atoms.positions)
+    r, theta, phi = cart2sph(r_cartesian)
+
+    r_grid2 = r_grid * r_grid
+    ar2g2 = np.empty((r.shape[0], r_grid2.shape[0]))
+    arg = np.empty((r.shape[0], r_grid2.shape[0]))
+    for a in range(r.shape[0]):
+        ar2g2[a] = alpha * (r[a] * r[a] + r_grid2)
+        arg[a] = 2. * alpha * r[a] * r_grid
+
+    dI_all = np.zeros((sum_odd_integers(l_max - 1) * r.shape[0], r_grid.shape[0]), dtype=complex)
+    lchunk, chunksizes, offsets = partition1d(I_all.shape[0], mpi_rank, mpi_size)
+    if parallel:
+        dI_local = np.zeros((chunksizes[mpi_rank], r_grid.shape[0]), dtype=complex)
+    else:
+        dI_local = dI_all
+    for idx in range(lchunk[0], lchunk[1]):
+        l = int(np.sqrt(idx / r.shape[0]))
+        m = idx / r.shape[0] - l ** 2
+        a = idx % r.shape[0]
+        _, dI_local[idx - offsets[mpi_rank]] = \
+            c_ilm2(l, m - l, alpha, ar2g2[a], theta[a], phi[a], arg[a], derivative)
+
+    if parallel:
+        mpi_comm.Allgatherv(dI_local.ravel(),
+                                [dI_all.ravel(), chunksizes * r_grid.shape[0],
+                                 offsets * r_grid.shape[0], MPI.DOUBLE_COMPLEX])
+
+    if parallel:
+        lchunk, chunksizes, offsets = partition1d(n_max * l_max * l_max, mpi_rank, mpi_size)
+
+        for idx in range(lchunk[0], lchunk[1]):
+            n = idx / (l_max * l_max)
+            nidx = idx % (l_max * l_max)
+            l = int(np.sqrt(nidx))
+            m = nidx - (l * (l + 1))
+            for a in range(r.shape[0]):
+                dc_nlm[idx] += np.dot(gr2dr[n], dI_all[(l ** 2 + m + l) * r.shape[0] + a])
+
+        mpi_comm.Allgatherv(dc_nlm[lchunk[0]: lchunk[1]],
+                                [dc_nlm, chunksizes, offsets, MPI.DOUBLE_COMPLEX])
+
+    else:
+        for a, n, l in itertools.product(range(r.shape[0]), range(n_max), range(l_max)):
+            for m in range(-l, l + 1):
+                idx = n * l_max * l_max + l * l + (m + l)
+                dc_nlm[idx] += np.dot(gr2dr[n], dI_all[(l ** 2 + m + l) * r.shape[0] + a])
+
+    return dc_nlm
+
+
 def sum_squares_odd_integers(n):
     """Sum of the squares of the first n odd integers.
 
@@ -803,6 +1005,8 @@ class SOAP(Kern):
         self.optimize_sigma = optimize_sigma
         self.derivative = False
         self.num_diff = num_diff
+        self.last_X_grad = None
+        self.last_X2_grad = None
 
         sigma = np.array(sigma)
         self.sigma = Param('sigma', sigma)  #, Logistic(0.2, 2.2))  # Logexp())
@@ -1044,9 +1248,10 @@ class SOAP(Kern):
             self.mpi_comm.Allgatherv(I_local.ravel(),
                                      [I_all.ravel(), chunksizes * self.r_grid_points,
                                       offsets * self.r_grid_points, self.MPI.DOUBLE_COMPLEX])
-            self.mpi_comm.Allgatherv(dI_local.ravel(),
-                                     [dI_all.ravel(), chunksizes * self.r_grid_points,
-                                      offsets * self.r_grid_points, self.MPI.DOUBLE_COMPLEX])
+            if derivative:
+                self.mpi_comm.Allgatherv(dI_local.ravel(),
+                                         [dI_all.ravel(), chunksizes * self.r_grid_points,
+                                          offsets * self.r_grid_points, self.MPI.DOUBLE_COMPLEX])
 
         if self.parallel_cnlm:
             lchunk, chunksizes, offsets = partition1d(self.n_max*self.l_max*self.l_max, self.mpi_rank, self.mpi_size)
@@ -1381,12 +1586,11 @@ class SOAP(Kern):
 
         """
         start = timer()
-        X_shape = X.shape[0]
-        if X2 is not None:
-            X2_shape = X2.shape[0]
-        else:
-            X2_shape = X.shape[0]
-        K = np.empty((X_shape, X2_shape))
+
+        # self.print('K(X, X2)', X.shape, X2)
+        if self.optimize_sigma and self.derivative:
+            self.last_X_grad = X
+            self.last_X2_grad = X2
 
         load_X = []
         load_X2 = []
@@ -1433,28 +1637,49 @@ class SOAP(Kern):
         self.idx2folderX2 = {}
         material_id = []
         material_id2 = []
+        # self.print(X, X.shape)
+        if X.dtype.kind == 'f' and X.shape[1] > 1:
+            self.print('Here')
+            baboom
         if X.dtype.kind == 'f':
             X = np.asarray(abs(np.asarray(X, dtype=int)), dtype=str)
+            for i in range(X.shape[0]):
+                # self.print(X[i][0])
+                if int(X[i][0]) != 0 and int(X[i][0]) != 1:
+                    X[i][0] = '{:05}'.format(int(X[i][0]))
         if X.dtype.kind == 'S':
             tmp = np.empty(X.shape, dtype=ase.Atoms)
             for i, folder in enumerate(X[:, 0]):
                 tmp[i, 0] = ATAT2GPAW(os.path.join(folder, self.structure_file)).get_atoms()
                 self.folder2idx[folder] = i
                 self.idx2folder[i] = folder
-                material_id.append('/'.join(folder.split('/')[0:-1]))
+                folder_material_id = '/'.join(folder.split('/')[0:-1])
+                if folder_material_id == '':
+                    folder_material_id = '.'
+                material_id.append(folder_material_id)
             X = tmp
+        # self.print('materials: {}'.format(material_id))
+        # self.print('materials: {}'.format(self.elements))
 
         if X2 is not None:
             if X2.dtype.kind == 'f':
                 X2 = np.asarray(abs(np.asarray(X2, dtype=int)), dtype=str)
+                for i in range(X2.shape[0]):
+                    # self.print(X2[i][0])
+                    if int(X2[i][0]) != 0 and int(X2[i][0]) != 1:
+                        X2[i][0] = '{:05}'.format(int(X2[i][0]))
             if X2.dtype.kind == 'S':
                 tmp = np.empty(X2.shape, dtype=ase.Atoms)
                 for i, folder in enumerate(X2[:, 0]):
                     tmp[i, 0] = ATAT2GPAW(os.path.join(folder, self.structure_file)).get_atoms()
                     self.idx2folderX2[i] = folder
-                    material_id2.append('/'.join(folder.split('/')[0:-1]))
+                    folder_material_id = '/'.join(folder.split('/')[0:-1])
+                    if folder_material_id == '':
+                        folder_material_id = '.'
+                    material_id2.append(folder_material_id)
                 X2 = tmp
 
+        """
         if False:  # Plot some pseudo-densities
             from mpl_toolkits.mplot3d import axes3d
             import matplotlib.pyplot as plt
@@ -1521,11 +1746,14 @@ class SOAP(Kern):
                 plt.savefig('pseudo_density_{}_{}.pdf'.format(config, species[i]))
                 plt.show(block=True)
             sys.exit(0)
+        """
 
         if self.optimize_sigma and self.derivative:
+            #self.print('call _K_dK')
             K = self._K_dK(X, X2, load_X, load_X2, material_id, material_id2)
             self.derivative = False
         else:
+            #self.print('call _K')
             K = self._K(X, X2, load_X, load_X2, material_id, material_id2)
 
         self.kernel_times.append(timer() - start)
@@ -1555,6 +1783,7 @@ class SOAP(Kern):
             Kernel matrix between the inputs in X and X2.
 
         """
+        # self.print(X, X2)
         self.n_eval += 1
         if (X2 is not None) and (X.shape == X2.shape) and (X == X2).all():
             X2 = None
@@ -1606,7 +1835,7 @@ class SOAP(Kern):
                         load = k
                         break
                 if self.verbosity > 0 and load == -1:
-                    self.print('\rPS {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
+                    self.print('\rPSK {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
 
                 # Load pss if available. Otherwise, calculate and save
                 if load >= 0:
@@ -1654,7 +1883,7 @@ class SOAP(Kern):
                     else:
                         kappa = kappa_full
                     if self.verbosity > 1:
-                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
+                        self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[self.mpi_rank]), end='')
                         sys.stdout.flush()
                     if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
                         # K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
@@ -1699,7 +1928,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                self.print('\rPS 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
+                self.print('\rPSK 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
             # Load pss if available. Otherwise, calculate and save
             if load >= 0:
                 pss.append(self.pss_buffer[load][1])
@@ -1727,7 +1956,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                self.print('\rPS 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
+                self.print('\rPSK 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
             # Load pss if available. Otherwise, calculate and save
             if load >= 0:
                 pss2.append(self.pss_buffer[load][1])
@@ -1898,7 +2127,8 @@ class SOAP(Kern):
             pss = []
             for i in range(X.shape[0]):
                 if self.verbosity > 1:
-                    self.print('\rPS {:02}/{:02}: '.format(i + 1, X.shape[0]), end='')
+                    # self.print('\rPSdK {:02}/{:02}: '.format(i + 1, X.shape[0]), end='')
+                    self.print('\rPSdK {:04.1f}%: '.format(100 * (i + 0.) / X.shape[0]), end='')
                     sys.stdout.flush()
                 if self.materials is not None:
                     species = material_elements[material_id[i]]
@@ -1950,7 +2180,8 @@ class SOAP(Kern):
                     else:
                         kappa = kappa_full
                     if self.verbosity > 1:
-                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
+                        # self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[self.mpi_rank]), end='')
+                        self.print('\rRed. {:04.1f}%: '.format(100 * (d1 + 0.) / chunksizes[self.mpi_rank]), end='')
                         sys.stdout.flush()
                     if (self.idx2folder[d1] + '-' + self.idx2folder[d2]) not in self.Kcross_buffer:
                         # K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss[d2], kappa, kappa).real
@@ -1969,6 +2200,53 @@ class SOAP(Kern):
                 self.mpi_comm.Allgatherv(Klocal, [K, chunksizes * X.shape[0], offsets * X.shape[0], self.MPI.DOUBLE])
 
             # Compute kernel matrix derivatives
+            # FIXME: kappa derivative
+            """
+            # dK/d\kappa(X, X). s1 == s2 => dK/d\kappa = 0. dK/d\kappa_{s1s2} = dK/d\kappa_{s2s1}
+            # Pre-compute terms dependent on only one structure
+            rdK00 = np.empty((n_species, n_species, X.shape[0]))
+            for s1 in range(n_species):
+                for s2 in range(s1):
+                    for d1 in range(X.shape[0]):
+                        if self.materials is not None:
+                            kappa11 = kappa_all[(material_id[d1], material_id[d1])]
+                        else:
+                            kappa11 = kappa_full
+
+                        dK00 = np.einsum('ijk, mnk, jn', pss[d1][:, s1, :, :], pss[d1][:, s2, :, :], kappa11).real + \
+                               np.einsum('ijk, mnk, jn', pss[d1][:, s2, :, :], pss[d1][:, s1, :, :], kappa11).real + \
+                               np.einsum('ijk, mnk, jn', pss[d1][:, :, s1, :], pss[d1][:, :, s2, :], kappa11).real + \
+                               np.einsum('ijk, mnk, jn', pss[d1][:, :, s2, :], pss[d1][:, :, s1, :], kappa11).real
+
+                        rdK00[s1, s2, d1] = rdK00[s2, s1, d1] = self.K_reduction(dK00)
+
+            for s1 in range(n_species):
+                for s2 in range(s1):
+                    for d1 in range(X.shape[0]):
+                        for d2 in range(d1):
+                            if self.materials is not None:
+                                kappa = kappa_all[(material_id[d1], material_id[d2])]
+                            else:
+                                kappa = kappa_full
+                            if self.verbosity > 1:
+                                self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
+                                sys.stdout.flush()
+
+                            dK01 = np.einsum('ijk, mnk, jn', pss[d1][:, s1, :, :], pss[d2][:, s2, :, :], kappa).real + \
+                                   np.einsum('ijk, mnk, jn', pss[d1][:, s2, :, :], pss[d2][:, s1, :, :], kappa).real + \
+                                   np.einsum('ijk, mnk, jn', pss[d1][:, :, s1, :], pss[d2][:, :, s2, :], kappa).real + \
+                                   np.einsum('ijk, mnk, jn', pss[d1][:, :, s2, :], pss[d2][:, :, s1, :], kappa).real
+
+                            rdK01 = self.K_reduction(dK01)
+                            rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK00[d2])
+
+                            dKij = rdK01 / np.sqrt(rK00[d1] * rK00[d2])
+                            dKij -= 0.5 * rK01 / (rK00[d1] * rK00[d2]) ** (1.5) \
+                                   * (rdK00[s1, s2, d1] * rK11[d2] + rK00[d1] * rdK11[s1, s2, d2])
+                            dKij *= self.exponent * pow(K[d1, d2], self.exponent - 1.)
+
+                            dK_dkappa[s1, s2, d1, d2] = dK_dkappa[s1, s2, d2, d1] = dKij
+            """
             # dK/d\alpha(X, X)
             rdK00_s = np.zeros(X.shape[0])
             if self.parallel_cnlm:
@@ -2004,7 +2282,8 @@ class SOAP(Kern):
                         else:
                             kappa = kappa_full
                         if self.verbosity > 1:
-                            self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
+                            # self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[self.mpi_rank]), end='')
+                            self.print('\rRed. {:04.1f}%: '.format(100 * (d1 + 0.) / chunksizes[self.mpi_rank]), end='')
                             sys.stdout.flush()
 
                         #dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss[d2], kappa, kappa).real + \
@@ -2036,6 +2315,11 @@ class SOAP(Kern):
 
             K += K.T - np.diag(K.diagonal())
             self.Km = np.power(K, self.exponent)
+            # FIXME: kappa derivative
+            # for s1 in range(n_species):
+            #     for s2 in range(s1 + 1, n_species):
+            #         dK_dkappa[s1, s2, :, :] = dK_dkappa[s2, s1, :, :]
+            # self.dK_dkappa = dK_dkappa
             for i in range(dK_dalpha.shape[0]):
                 dK_dalpha[i] = dK_dalpha[i] + dK_dalpha[i].T
             self.dK_dalpha = dK_dalpha
@@ -2066,7 +2350,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                self.print('\rPS 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end='')
+                self.print('\rPSdK 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end='')
                 sys.stdout.flush()
             nl1[i].update(X[i, 0])
             p, dp = self.get_all_power_spectrums(X[i, 0], nl1[i], species, True)
@@ -2094,7 +2378,7 @@ class SOAP(Kern):
                     load = k
                     break
             if self.verbosity > 0 and load == -1:
-                print('\rPS 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end='')
+                print('\rPSdK 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end='')
                 sys.stdout.flush()
             nl2[i].update(X2[i, 0])
             p, dp = self.get_all_power_spectrums(X2[i, 0], nl2[i], species, True)
@@ -2149,7 +2433,7 @@ class SOAP(Kern):
                 else:
                     kappa = kappa_full
                 if self.verbosity > 1:
-                    self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
+                    self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[self.mpi_rank]), end='')
                     sys.stdout.flush()
 
                 # K01 = np.einsum('ijkl, mnol, jn, ko', pss[d1], pss2[d2], kappa, kappa).real
@@ -2260,7 +2544,7 @@ class SOAP(Kern):
                     else:
                         kappa = kappa_full
                     if self.verbosity > 1:
-                        self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
+                        self.print('\r{:02}/{:02}: '.format(d1 + 1, chunksizes[self.mpi_rank]), end='')
                         sys.stdout.flush()
 
                     # dK01 = np.einsum('ijkl, mnol, jn, ko', dpss_dalpha[d1][:, s1], pss2[d2], kappa, kappa).real + \
@@ -2313,7 +2597,8 @@ class SOAP(Kern):
 
         Notes
         -----
-        It assumes that K(X, X2) has been called before requesting the derivative.
+        The analytical gradient assumes that K(X, X2) has been called
+        before requesting the derivative.
 
         """
         if self.optimize_sigma:
@@ -2340,6 +2625,32 @@ class SOAP(Kern):
                     np.savez('dK_dsigma_numerical_{}'.format(i), dK=(K1 - K0) / (2 * dsigma))
             else:
                 # Analytical gradient
+                do_gradient = False
+                if (self.last_X_grad is not None):
+                    if ((X.shape == self.last_X_grad.shape)
+                        and (X == self.last_X_grad).all()):
+                        if X2 is None:
+                            if self.last_X2_grad is None:
+                                pass
+                            else:
+                                do_gradient = True
+                        else:
+                            if self.last_X2_grad is None:
+                                do_gradient = True
+                            else:
+                                if ((X2.shape == self.last_X2_grad.shape)
+                                    and (X2 == self.last_X2_grad).all()):
+                                    pass
+                                else:
+                                    do_gradient = True
+                    else:
+                        do_gradient = True
+                else:
+                    do_gradient = True
+                if do_gradient:
+                    self.derivative = True
+                    _ = self.K(X, X2)
+
                 for i, a in enumerate(self.alpha):
                     self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha[i] / (-self.sigma[i] ** 3))
                     np.savez('dK_dsigma_analytical_{}'.format(i), dK=self.dK_dalpha[i] / (-self.sigma[i] ** 3))
