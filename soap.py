@@ -962,7 +962,24 @@ class SOAP(Kern):
         self.quad_type = quadrature_type
         self.set_r_grid(r_grid_points)
         if multi_atom and similarity is not None:
-            self.similarity = similarity
+            all_elements = []
+            for k in elements.keys():
+                all_elements += elements[k]
+            self.all_elements = list(set(all_elements))
+            self.all_elements.sort()
+            n_elements = len(all_elements)
+            self.n_elements = n_elements
+            if False: #elements is not None:
+                n_kappa = (n_elements * (n_elements - 1)) / 2
+                kappa = 0.5 * np.ones(n_kappa)
+                self.kappa = Param('kappa', kappa)
+                self.link_parameter(self.kappa)
+                self.kappa.set_prior(GPy.priors.Uniform(0., 1.), warning=False)
+                self.similarity = self.get_kappa
+                if not optimize_sigma:
+                    self.kappa.fix()
+            else:
+                self.similarity = similarity
         else:
             self.similarity = dirac_delta
         self.multi_atom = multi_atom
@@ -1031,6 +1048,16 @@ class SOAP(Kern):
 
     def __del__(self):
         self.print('{} evaluations of kernel performed'.format(self.n_eval))
+
+    def get_kappa(self, e1, e2):
+        idx_1 = self.all_elements.index(e1)
+        idx_2 = self.all_elements.index(e2)
+        if idx_1 == idx_2:
+            return 1.
+        if idx_1 > idx_2:
+            idx_1, idx_2 = idx_2, idx_1
+        idx = idx_1 * self.n_elements - (idx_1 * (idx_1 + 1))/2 + (idx_2 - idx_1 - 1)
+        return self.kappa[idx]
 
     def set_r_grid(self, n_points=None):
         """Creates a radial grid for numerical integration and calls self.update_G.
