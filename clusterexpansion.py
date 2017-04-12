@@ -97,9 +97,9 @@ class ClusterExpansion:
                                                         f, data_filename))]
         self.exp_folders.sort(key=int)
         if use_only is not None:
-            if type(use_only[0]) == int:
+            if isinstance(use_only[0], (int, long)):
                 self.exp_folders = list(np.asarray(self.exp_folders)[use_only])
-            elif type(use_only[0]) == str:
+            elif isinstance(use_only[0], six.string_types):
                 self.exp_folders = [os.path.join(base_dir,
                                                  f) for f in use_only]
         self.diameters = diameters
