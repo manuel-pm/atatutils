@@ -949,9 +949,9 @@ class SOAP(Kern):
     """
     def __init__(self, input_dim, sigma=1., r_cut=5., l_max=10, n_max=10, exponent=1, r_grid_points=None,
                  similarity=None, multi_atom=False, verbosity=0, structure_file='str_relax.out',
-                 parallel=None, optimize_sigma=True, optimize_exponent=False, use_pss_buffer=True,
+                 parallel=None, optimize_sigma=True, optimize_exponent=False, optimize_kappa=True, use_pss_buffer=True,
                  quadrature_order=2, quadrature_type='gauss-legendre', materials=None, elements=None,
-                 num_diff=False, mpi_comm=None):
+                 num_diff=False, mpi_comm=None, kappa=None):
         super(SOAP, self).__init__(input_dim, [0],  'SOAP')
         self.alpha = 1. / (2 * sigma**2)  # alpha = 2./(0.5**2) ? Check
         self.r_cut = r_cut
@@ -961,42 +961,6 @@ class SOAP(Kern):
         self.quad_order = quadrature_order
         self.quad_type = quadrature_type
         self.set_r_grid(r_grid_points)
-        if multi_atom and similarity is not None:
-            all_elements = []
-            for k in elements.keys():
-                all_elements += elements[k]
-            self.all_elements = list(set(all_elements))
-            self.all_elements.sort()
-            n_elements = len(all_elements)
-            self.n_elements = n_elements
-            if False: #elements is not None:
-                n_kappa = (n_elements * (n_elements - 1)) / 2
-                kappa = 0.5 * np.ones(n_kappa)
-                self.kappa = Param('kappa', kappa)
-                self.link_parameter(self.kappa)
-                self.kappa.set_prior(GPy.priors.Uniform(0., 1.), warning=False)
-                self.similarity = self.get_kappa
-                if not optimize_sigma:
-                    self.kappa.fix()
-            else:
-                self.similarity = similarity
-        else:
-            self.similarity = dirac_delta
-        self.multi_atom = multi_atom
-        self.materials = materials
-        self.elements = elements
-        if self.elements is not None:
-            for k in self.elements.keys():
-                self.elements[k].sort()
-        self.verbosity = verbosity
-        self.pss_buffer = []
-        self.use_pss_buffer = use_pss_buffer
-        self.Kdiag_buffer = {}
-        self.Kcross_buffer = {}
-        self.structure_file = structure_file
-        self.soap_input_dim = input_dim
-        self.r_grid_points = r_grid_points
-        self.n_eval = 0
 
         self.parallel_cnlm = False
         if mpi_comm is not None:
@@ -1019,7 +983,56 @@ class SOAP(Kern):
             self.mpi_rank = 0
             self.print = print
 
+        self.old_sigma = None
+        self.old_kappa = None
+        if multi_atom:
+            all_species = []
+            for k in elements.keys():
+                all_species += elements[k]
+            self.all_species = list(set(all_species))
+            self.all_species.sort()
+            n_species = len(all_species)
+            self.n_species = n_species
+            if kappa is not None and similarity is not None:
+                self.print('WARNING: kappa and similarity given. Only one'
+                           'can be used. Using kappa.')
+
+            self.n_kappa = (n_species * (n_species - 1)) / 2
+            if kappa is None:
+                if similarity is None:
+                    kappa = 0.5 * np.ones(self.n_kappa)
+                else:
+                    kappa = 0.5 * np.ones(self.n_kappa)
+                    count = 0
+                    for i in range(self.n_species):
+                        for j in range(i):
+                            kappa[count] = similarity(self.all_species[i], self.all_species[j])
+                            count += 1
+
+            self.kappa = Param('kappa', kappa, Logistic(0.0, 1.0))  # Bounded in [0, 1]
+            self.link_parameter(self.kappa)
+            self.kappa.set_prior(GPy.priors.Uniform(0., 1.), warning=False)
+            self.similarity = self.get_kappa
+        else:
+            self.similarity = dirac_delta
+        self.multi_atom = multi_atom
+        self.materials = materials
+        self.elements = elements
+        if self.elements is not None:
+            for k in self.elements.keys():
+                self.elements[k].sort()
+        self.verbosity = verbosity
+        self.pss_buffer = []
+        self.use_pss_buffer = use_pss_buffer
+        self.Kdiag_buffer = {}
+        self.Kcross_buffer = {}
+        self.structure_file = structure_file
+        self.soap_input_dim = input_dim
+        self.r_grid_points = r_grid_points
+        self.n_eval = 0
+
         self.optimize_sigma = optimize_sigma
+        self.optimize_kappa = optimize_kappa
         self.derivative = False
         self.num_diff = num_diff
         self.last_X_grad = None
@@ -1029,8 +1042,12 @@ class SOAP(Kern):
         self.sigma = Param('sigma', sigma)  #, Logistic(0.2, 2.2))  # Logexp())
         self.link_parameter(self.sigma)
         self.sigma.set_prior(GPy.priors.Gamma.from_EV(0.7, 0.2), warning=False)  # Prior mean: 0.7 A, prior variance: 0.2 A^2
-        if not optimize_sigma:
+        if not optimize_sigma and not optimize_kappa:
+            self.fix()
+        elif optimize_sigma:
             self.sigma.fix()
+        elif optimize_kappa:
+            self.kappa.fix()
 
         self.optimize_exponent = optimize_exponent
         if optimize_exponent:
@@ -1049,14 +1066,20 @@ class SOAP(Kern):
     def __del__(self):
         self.print('{} evaluations of kernel performed'.format(self.n_eval))
 
-    def get_kappa(self, e1, e2):
-        idx_1 = self.all_elements.index(e1)
-        idx_2 = self.all_elements.index(e2)
+    def get_kappa_idx(self, idx_1, idx_2):
         if idx_1 == idx_2:
-            return 1.
+            return -1
         if idx_1 > idx_2:
             idx_1, idx_2 = idx_2, idx_1
-        idx = idx_1 * self.n_elements - (idx_1 * (idx_1 + 1))/2 + (idx_2 - idx_1 - 1)
+        idx = idx_1 * self.n_species - (idx_1 * (idx_1 + 1))/2 + (idx_2 - idx_1 - 1)
+        return idx
+
+    def get_kappa(self, e1, e2):
+        idx_1 = self.all_species.index(e1)
+        idx_2 = self.all_species.index(e2)
+        idx = self.get_kappa_idx(idx_1, idx_2)
+        if idx == -1:
+            return 1.
         return self.kappa[idx]
 
     def set_r_grid(self, n_points=None):
@@ -1866,14 +1889,14 @@ class SOAP(Kern):
 
                 # Load pss if available. Otherwise, calculate and save
                 if load >= 0:
-                    pss.append(self.pss_buffer[load][1])
+                    pss.append(self.pss_buffer[load][1][0])
                 else:
                     nl[i].update(X[i, 0])
                     pss.append(self.get_all_power_spectrums(X[i, 0], nl[i], species))
                     for j, ll in enumerate(self.pss_buffer):
                         try:
                             if i == ll[1]:
-                                self.pss_buffer[j][1] = pss[-1]
+                                self.pss_buffer[j][1] = (pss[-1],)
                                 break
                         except:
                             pass
@@ -1958,14 +1981,14 @@ class SOAP(Kern):
                 self.print('\rPSK 1 {:02}/{:02}'.format(i + 1, X.shape[0]), end=''); sys.stdout.flush()
             # Load pss if available. Otherwise, calculate and save
             if load >= 0:
-                pss.append(self.pss_buffer[load][1])
+                pss.append(self.pss_buffer[load][1][0])
             else:
                 nl1[i].update(X[i, 0])
                 pss.append(self.get_all_power_spectrums(X[i, 0], nl1[i], species))
                 for j, ll in enumerate(self.pss_buffer):
                     try:
                         if i == ll[1]:
-                            self.pss_buffer[j][1] = pss[-1]
+                            self.pss_buffer[j][1] = (pss[-1],)
                             break
                     except:
                         pass
@@ -1986,14 +2009,14 @@ class SOAP(Kern):
                 self.print('\rPSK 2 {:02}/{:02}'.format(i + 1, X2.shape[0]), end=''); sys.stdout.flush()
             # Load pss if available. Otherwise, calculate and save
             if load >= 0:
-                pss2.append(self.pss_buffer[load][1])
+                pss2.append(self.pss_buffer[load][1][0])
             else:
                 nl2[i].update(X2[i, 0])
                 pss2.append(self.get_all_power_spectrums(X2[i, 0], nl2[i], species))
                 for j, ll in enumerate(self.pss_buffer):
                     try:
                         if i + X.shape[0] == ll[1]:
-                            self.pss_buffer[j][1] = pss2[-1]
+                            self.pss_buffer[j][1] = (pss2[-1],)
                             break
                     except:
                         pass
@@ -2124,16 +2147,22 @@ class SOAP(Kern):
                 for s2 in range(n_species):
                     kappa_full[s1, s2] = self.similarity(species[s1], species[s2])
             kappa_all = {}
+            all_species = {}
             if self.materials is not None:
+                n_species = self.n_species
                 material_elements = {}
                 for material in self.materials:
                     material_elements[material] = self.elements[material]
-                    n_species = len(material_elements[material])
+                    # n_species = len(material_elements[material])
                 for material1 in self.materials:
                     for material2 in self.materials:
-                        kappa_all[(material1, material2)] = np.empty((n_species, n_species))
-                        for s1 in range(n_species):
-                            for s2 in range(n_species):
+                        species_12 = list(set(self.elements[material2] + self.elements[material2]))
+                        species_12.sort()
+                        all_species[(material1, material2)] = species_12
+                        n_species_12 = len(species_12)
+                        kappa_all[(material1, material2)] = np.empty((n_species_12, n_species_12))
+                        for s1 in range(n_species_12):
+                            for s2 in range(n_species_12):
                                 kappa_all[(material1, material2)][s1, s2] = self.similarity(
                                     self.elements[material1][s1],
                                     self.elements[material2][s2])
@@ -2145,7 +2174,7 @@ class SOAP(Kern):
         if X2 is None:
             K = np.eye(X.shape[0])
             dK_dalpha = np.zeros((n_species, X.shape[0], X.shape[0]))
-            # dK_dkappa = np.zeros((n_spececies, n_species, X.shape[0], X.shape[0])) # FIXME: kappa derivative
+            dK_dkappa = np.zeros((self.n_kappa, X.shape[0], X.shape[0])) # FIXME: kappa derivative
             nl = []
             for d in range(X.shape[0]):
                 nl.append(ase.neighborlist.NeighborList(X[d, 0].positions.shape[0] * [self.r_cut / 1.99],
@@ -2153,24 +2182,35 @@ class SOAP(Kern):
             dpss_dalpha = []
             pss = []
             for i in range(X.shape[0]):
-                if self.verbosity > 1:
-                    # self.print('\rPSdK {:02}/{:02}: '.format(i + 1, X.shape[0]), end='')
-                    self.print('\rPSdK {:04.1f}%: '.format(100 * (i + 0.) / X.shape[0]), end='')
-                    sys.stdout.flush()
                 if self.materials is not None:
                     species = material_elements[material_id[i]]
+                load = -1
+                # Check if pss available and choose which one to load
+                for j, k in load_X:
+                    if i == j:
+                        load = k
+                        break
+                if self.verbosity > 1 and load == -1:
+                    self.print('\rPSdK {:04.1f}%: '.format(100 * (i + 0.) / X.shape[0]), end='')
+                    sys.stdout.flush()
 
-                nl[i].update(X[i, 0])
-                p, dp = self.get_all_power_spectrums(X[i, 0], nl[i], species, True)
-                pss.append(p)
-                dpss_dalpha.append(dp)
-                for j, ll in enumerate(self.pss_buffer):
-                    try:
-                        if i == ll[1]:
-                            self.pss_buffer[j][1] = pss[-1]
-                            break
-                    except:
-                        pass
+                # Load pss if available. Otherwise, calculate and save
+                if load >= 0:
+                    p, dp = self.pss_buffer[load][1]
+                    pss.append(p)
+                    dpss_dalpha.append(dp)
+                else:
+                    nl[i].update(X[i, 0])
+                    p, dp = self.get_all_power_spectrums(X[i, 0], nl[i], species, True)
+                    pss.append(p)
+                    dpss_dalpha.append(dp)
+                    for j, ll in enumerate(self.pss_buffer):
+                        try:
+                            if i == ll[1]:
+                                self.pss_buffer[j][1] = (pss[-1], dpss_dalpha[-1])
+                                break
+                        except:
+                            pass
 
             start = timer()
             dK_s = np.zeros((X.shape[0], X.shape[0]))
@@ -2228,13 +2268,13 @@ class SOAP(Kern):
 
             # Compute kernel matrix derivatives
             # FIXME: kappa derivative
-            """
+
             # dK/d\kappa(X, X). s1 == s2 => dK/d\kappa = 0. dK/d\kappa_{s1s2} = dK/d\kappa_{s2s1}
             # Pre-compute terms dependent on only one structure
-            rdK00 = np.empty((n_species, n_species, X.shape[0]))
-            for s1 in range(n_species):
-                for s2 in range(s1):
-                    for d1 in range(X.shape[0]):
+            rdK00 = np.empty((self.n_kappa, X.shape[0]))
+            for d1 in range(X.shape[0]):
+                for s1 in range(len(self.elements[material_id[d1]])):
+                    for s2 in range(s1):
                         if self.materials is not None:
                             kappa11 = kappa_all[(material_id[d1], material_id[d1])]
                         else:
@@ -2245,35 +2285,44 @@ class SOAP(Kern):
                                np.einsum('ijk, mnk, jn', pss[d1][:, :, s1, :], pss[d1][:, :, s2, :], kappa11).real + \
                                np.einsum('ijk, mnk, jn', pss[d1][:, :, s2, :], pss[d1][:, :, s1, :], kappa11).real
 
-                        rdK00[s1, s2, d1] = rdK00[s2, s1, d1] = self.K_reduction(dK00)
+                        is1 = self.all_species.index(material_elements[material_id[d1]][s1])
+                        is2 = self.all_species.index(material_elements[material_id[d1]][s2])
+                        rdK00[self.get_kappa_idx(is1, is2), d1] = self.K_reduction(dK00)
 
-            for s1 in range(n_species):
-                for s2 in range(s1):
-                    for d1 in range(X.shape[0]):
-                        for d2 in range(d1):
+            for d1 in range(X.shape[0]):
+                for d2 in range(d1):
+                    lspecies = all_species[(material_id[d1], material_id[d2])]
+                    for s1 in range(len(lspecies)):
+                        for s2 in range(s1):
+                            i1 = material_elements[material_id[d1]].index(lspecies[s1])
+                            i2 = material_elements[material_id[d2]].index(lspecies[s2])
+                            is1 = self.all_species.index(material_elements[material_id[d1]][s1])
+                            is2 = self.all_species.index(material_elements[material_id[d1]][s2])
+                            kappa_idx = self.get_kappa_idx(is1, is2)
                             if self.materials is not None:
                                 kappa = kappa_all[(material_id[d1], material_id[d2])]
                             else:
                                 kappa = kappa_full
                             if self.verbosity > 1:
-                                self.print('\r{:02}/{:02}: '.format(d1 + 1, X.shape[0]), end='')
+                                self.print('\rRed. {:04.1f}%: '.format(100 * (d1 + 0.) / X.shape[0]),
+                                           end='')
                                 sys.stdout.flush()
 
-                            dK01 = np.einsum('ijk, mnk, jn', pss[d1][:, s1, :, :], pss[d2][:, s2, :, :], kappa).real + \
-                                   np.einsum('ijk, mnk, jn', pss[d1][:, s2, :, :], pss[d2][:, s1, :, :], kappa).real + \
-                                   np.einsum('ijk, mnk, jn', pss[d1][:, :, s1, :], pss[d2][:, :, s2, :], kappa).real + \
-                                   np.einsum('ijk, mnk, jn', pss[d1][:, :, s2, :], pss[d2][:, :, s1, :], kappa).real
+                            dK01 = np.einsum('ijk, mnk, jn', pss[d1][:, i1, :, :], pss[d2][:, i2, :, :], kappa).real + \
+                                   np.einsum('ijk, mnk, jn', pss[d1][:, i2, :, :], pss[d2][:, i1, :, :], kappa).real + \
+                                   np.einsum('ijk, mnk, jn', pss[d1][:, :, i1, :], pss[d2][:, :, i2, :], kappa).real + \
+                                   np.einsum('ijk, mnk, jn', pss[d1][:, :, i2, :], pss[d2][:, :, i1, :], kappa).real
 
                             rdK01 = self.K_reduction(dK01)
                             rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK00[d2])
 
                             dKij = rdK01 / np.sqrt(rK00[d1] * rK00[d2])
                             dKij -= 0.5 * rK01 / (rK00[d1] * rK00[d2]) ** (1.5) \
-                                   * (rdK00[s1, s2, d1] * rK11[d2] + rK00[d1] * rdK11[s1, s2, d2])
+                                   * (rdK00[kappa_idx, d1] * rK00[d2] + rK00[d1] * rdK00[kappa_idx, d2])
                             dKij *= self.exponent * pow(K[d1, d2], self.exponent - 1.)
 
-                            dK_dkappa[s1, s2, d1, d2] = dK_dkappa[s1, s2, d2, d1] = dKij
-            """
+                            dK_dkappa[kappa_idx, d1, d2] = dKij
+
             # dK/d\alpha(X, X)
             rdK00_s = np.zeros(X.shape[0])
             if self.parallel_cnlm:
@@ -2343,10 +2392,7 @@ class SOAP(Kern):
             K += K.T - np.diag(K.diagonal())
             self.Km = np.power(K, self.exponent)
             # FIXME: kappa derivative
-            # for s1 in range(n_species):
-            #     for s2 in range(s1 + 1, n_species):
-            #         dK_dkappa[s1, s2, :, :] = dK_dkappa[s2, s1, :, :]
-            # self.dK_dkappa = dK_dkappa
+            self.dK_dkappa = dK_dkappa
             for i in range(dK_dalpha.shape[0]):
                 dK_dalpha[i] = dK_dalpha[i] + dK_dalpha[i].T
             self.dK_dalpha = dK_dalpha
@@ -2356,7 +2402,7 @@ class SOAP(Kern):
         # else (X2 is not None)
         K = np.zeros((X.shape[0], X2.shape[0]))
         dK_dalpha = np.zeros((n_species, X.shape[0], X2.shape[0]))
-        # dK_dkappa = np.zeros((n_spececies, n_species, X.shape[0], X.shape[0])) # FIXME: kappa derivative
+        dK_dkappa = np.zeros((self.n_kappa, X.shape[0], X.shape[0])) # FIXME: kappa derivative
         nl1 = []
         for d1 in range(X.shape[0]):
             nl1.append(ase.neighborlist.NeighborList(X[d1, 0].positions.shape[0] * [self.r_cut / 1.99],
@@ -2386,7 +2432,7 @@ class SOAP(Kern):
             for j, ll in enumerate(self.pss_buffer):
                 try:
                     if i == ll[1]:
-                        self.pss_buffer[j][1] = pss[-1]
+                        self.pss_buffer[j][1] = (pss[-1],)
                         break
                 except:
                     pass
@@ -2414,7 +2460,7 @@ class SOAP(Kern):
             for j, ll in enumerate(self.pss_buffer):
                 try:
                     if i + X.shape[0] == ll[1]:
-                        self.pss_buffer[j][1] = pss2[-1]
+                        self.pss_buffer[j][1] = (pss2[-1],)
                         break
                 except:
                     pass
@@ -2475,7 +2521,7 @@ class SOAP(Kern):
 
         # Compute kernel matrix derivatives
         # FIXME: kappa derivative
-        """
+
         # dK/d\kappa(X, X2). s1 == s2 => dK/d\kappa = 0. dK/d\kappa_{s1s2} = dK/d\kappa_{s2s1}
         # Pre-compute terms dependent on only one structure
         rdK00 = np.empty((n_species, n_species, X.shape[0]))
@@ -2536,7 +2582,6 @@ class SOAP(Kern):
                         dKij *= self.exponent * pow(K[d1, d2], self.exponent - 1.)
 
                         dK_dkappa[s1, s2, d1, d2] = dKij
-        """
 
         # dK/d\alpha
         # Pre-compute terms dependent on only one structure
@@ -2634,14 +2679,14 @@ class SOAP(Kern):
                 # self.n_eval += 2
                 dsigma = 0.0005
                 for i, a in enumerate(self.alpha):
-                    self.print('+dK[{}]'.format(i))
+                    # self.print('+dK_a[{}]'.format(i))
                     soap = SOAP(self.soap_input_dim, self.sigma, self.r_cut, self.l_max, self.n_max, self.exponent,
                                 self.r_grid_points, self.similarity, self.multi_atom, self.verbosity,
                                 self.structure_file, parallel='cnlm', optimize_sigma=False, materials=self.materials,
                                 elements=self.elements)
                     soap.sigma[i] = soap.sigma[i] + dsigma
                     K1 = soap.K(X, X2)
-                    self.print('-dK[{}]'.format(i))
+                    # self.print('-dK_a[{}]'.format(i))
                     soap = SOAP(self.soap_input_dim, self.sigma, self.r_cut, self.l_max, self.n_max, self.exponent,
                                 self.r_grid_points, self.similarity, self.multi_atom, self.verbosity,
                                 self.structure_file, parallel='cnlm', optimize_sigma=False, materials=self.materials,
@@ -2674,17 +2719,79 @@ class SOAP(Kern):
                         do_gradient = True
                 else:
                     do_gradient = True
-                if do_gradient:
+                if False: #do_gradient:
                     self.derivative = True
                     _ = self.K(X, X2)
 
                 for i, a in enumerate(self.alpha):
                     self.sigma.gradient[i] = np.sum(dL_dK * self.dK_dalpha[i] / (-self.sigma[i] ** 3))
                     np.savez('dK_dsigma_analytical_{}'.format(i), dK=self.dK_dalpha[i] / (-self.sigma[i] ** 3))
-            #self.print(self.sigma.values, self.sigma.gradient)
-            #baboom
-        if not (self.optimize_exponent or self.optimize_sigma):
-            pass
+        else:
+            for i, a in enumerate(self.alpha):
+                self.sigma.gradient[i] = 0.
+        if self.optimize_kappa:
+            if self.num_diff:
+                # Numerical gradient
+                # self.n_eval += 2
+                dkappa = 0.001
+                for i, a in enumerate(self.kappa):
+                    # self.print('+dK_k[{}]'.format(i))
+                    kappa = np.copy(self.kappa.values)
+                    kappa[i] = self.kappa.values[i] + dkappa
+                    soap = SOAP(self.soap_input_dim, self.sigma, self.r_cut, self.l_max, self.n_max, self.exponent,
+                                self.r_grid_points, self.similarity, self.multi_atom, self.verbosity,
+                                self.structure_file, parallel='cnlm', optimize_sigma=False, materials=self.materials,
+                                elements=self.elements, kappa=kappa)
+                    K1 = soap.K(X, X2)
+                    # self.print('-dK_k[{}]'.format(i))
+                    kappa = np.copy(self.kappa.values)
+                    kappa[i] = self.kappa.values[i] - dkappa
+                    soap = SOAP(self.soap_input_dim, self.sigma, self.r_cut, self.l_max, self.n_max, self.exponent,
+                                self.r_grid_points, self.similarity, self.multi_atom, self.verbosity,
+                                self.structure_file, parallel='cnlm', optimize_sigma=False, materials=self.materials,
+                                elements=self.elements, kappa=kappa)
+                    K0 = soap.K(X, X2)
+                    self.kappa.gradient[i] = np.sum(dL_dK * (K1 - K0) / (2 * dkappa))
+                    np.savez('dK_dkappa_numerical_{}'.format(i), dK=(K1 - K0) / (2 * dkappa))
+            else:
+                # Analytical gradient
+                do_gradient = False
+                if (self.last_X_grad is not None):
+                    if ((X.shape == self.last_X_grad.shape)
+                        and (X == self.last_X_grad).all()):
+                        if X2 is None:
+                            if self.last_X2_grad is None:
+                                pass
+                            else:
+                                do_gradient = True
+                        else:
+                            if self.last_X2_grad is None:
+                                do_gradient = True
+                            else:
+                                if ((X2.shape == self.last_X2_grad.shape)
+                                    and (X2 == self.last_X2_grad).all()):
+                                    pass
+                                else:
+                                    do_gradient = True
+                    else:
+                        do_gradient = True
+                else:
+                    do_gradient = True
+                if False: #do_gradient:
+                    self.derivative = True
+                    _ = self.K(X, X2)
+
+                for i, k in enumerate(self.kappa):
+                    self.kappa.gradient[i] = np.sum(dL_dK * self.dK_dkappa[i])
+                    np.savez('dK_dkappa_analytical_{}'.format(i), dK=self.dK_dkappa[i])
+        else:
+            for i, k in enumerate(self.kappa):
+                self.kappa.gradient[i] = 0.
+
+        # if self.optimize_sigma or self.optimize_kappa:
+        #     self.print('\na: {} {} / k: {} {}'.format(self.sigma.values, self.sigma.gradient,
+        #                                               self.kappa.values, self.kappa.gradient))
+        #     sys.stdout.flush()
 
     def update_gradients_diag(self, dL_dKdiag, X):
         """Updates the diagonal of the gradients of the kernel parameters.
@@ -2697,32 +2804,42 @@ class SOAP(Kern):
             Id's for a set of structures.
 
         """
-        if self.optimize_sigma:
-            for i, a in enumerate(self.alpha):
-                self.sigma.gradient[i] = 0.
-        if self.optimize_exponent:
-            self.exponent.gradient = 0.
-        if not (self.optimize_exponent or self.optimize_sigma):
-            pass
+        for i, a in enumerate(self.alpha):
+            self.sigma.gradient[i] = 0.
+        for i, k in enumerate(self.kappa):
+            self.kappa.gradient[i] = 0.
 
     def parameters_changed(self):
         """Updates the class when a model parameter is changed.
 
         """
+        # self.print(self.old_kappa == self.kappa.values, (self.old_kappa == self.kappa.values).all())
+        if (np.array((self.old_kappa == self.kappa.values)).all()
+            and np.array((self.old_sigma == self.sigma.values)).all()):
+            if self.optimize_sigma:
+                self.derivative = True and (not self.num_diff)
+                if len(self.pss_buffer[-1][1]) != 2:
+                    self.pss_buffer = []
+            return
+        # if self.old_sigma is not None and self.old_kappa is not None:
+        #     self.print('\ndelta_sigma: {}, delta_kappa: {}'.format(self.sigma.values - self.old_sigma, self.kappa.values - self.old_kappa))
+        #     sys.stdout.flush()
         self.alpha = 1. / (2 * self.sigma ** 2)
         self.pss_buffer = []  # Forget values of the power spectrum
         self.Kcross_buffer = {}
         self.Kdiag_buffer = {}
 
-        if self.optimize_sigma:
-            self.alpha = 1. / (2 * self.sigma**2)
-            self.pss_buffer = []    # Forget values of the power spectrum
-            self.Kcross_buffer = {}
-            self.Kdiag_buffer = {}
+        if self.optimize_sigma or self.optimize_kappa:
+            # self.alpha = 1. / (2 * self.sigma**2)
+            # self.pss_buffer = []    # Forget values of the power spectrum
+            # self.Kcross_buffer = {}
+            # self.Kdiag_buffer = {}
             self.derivative = True and (not self.num_diff) # Calculate analytical derivative next iteration
             self.dK_dalpha = None   # Invalidate derivative
-        else:
-            pass
+            self.dK_dkappa = None
+
+        self.old_kappa = np.copy(self.kappa.values)
+        self.old_sigma = np.copy(self.sigma.values)
 
     def gradients_X(self, dL_dK, X, X2=None):
         """Compute the derivatives with respect to the inputs of the model.
