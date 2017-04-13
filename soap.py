@@ -900,6 +900,9 @@ class SOAP(Kern):
     sigma : iterable of float > 0.
         Standard deviation of the Gaussians representing the pseudo-density of
          each type of atom.
+    kappa : iterable of float > 0.
+        Similarity between different species for which the kernel is used. It
+        is the flattened upper diagonal of the similarity matrix.
     r_cut : float > 0
         Cut-off radius for constructing the atomic neighbourhoods.
     l_max : int > 0
@@ -924,6 +927,8 @@ class SOAP(Kern):
         Determines if the gradient of sigma is calculated for its optimization.
     optimize_exponent : bool, optional
         Determines if the exponent is optimized. DEPRECATED.
+    optimize_kappa : bool
+        Determines if the gradient of kappa is calculated for its optimization.
     use_pss_buffer : bool, optional
         Determines if the power spectrums are buffered in memory for reuse.
     quadrature_order : int > 0, optional
@@ -2297,7 +2302,7 @@ class SOAP(Kern):
                             i1 = material_elements[material_id[d1]].index(lspecies[s1])
                             i2 = material_elements[material_id[d2]].index(lspecies[s2])
                             is1 = self.all_species.index(material_elements[material_id[d1]][s1])
-                            is2 = self.all_species.index(material_elements[material_id[d1]][s2])
+                            is2 = self.all_species.index(material_elements[material_id[d2]][s2])
                             kappa_idx = self.get_kappa_idx(is1, is2)
                             if self.materials is not None:
                                 kappa = kappa_all[(material_id[d1], material_id[d2])]
@@ -2524,10 +2529,10 @@ class SOAP(Kern):
 
         # dK/d\kappa(X, X2). s1 == s2 => dK/d\kappa = 0. dK/d\kappa_{s1s2} = dK/d\kappa_{s2s1}
         # Pre-compute terms dependent on only one structure
-        rdK00 = np.empty((n_species, n_species, X.shape[0]))
-        for s1 in range(n_species):
-            for s2 in range(s1):
-                for d1 in range(X.shape[0]):
+        rdK00 = np.empty((self.n_kappa, X.shape[0]))
+        for d1 in range(X.shape[0]):
+            for s1 in range(len(self.elements[material_id[d1]])):
+                for s2 in range(s1):
                     if self.materials is not None:
                         kappa11 = kappa_all[(material_id[d1], material_id[d1])]
                     else:
@@ -2538,12 +2543,14 @@ class SOAP(Kern):
                            np.einsum('ijk, mnk, jn', pss[d1][:, :, s1, :], pss[d1][:, :, s2, :], kappa11).real + \
                            np.einsum('ijk, mnk, jn', pss[d1][:, :, s2, :], pss[d1][:, :, s1, :], kappa11).real
 
-                    rdK00[s1, s2, d1] = rdK00[s2, s1, d1] = self.K_reduction(dK00)
+                    is1 = self.all_species.index(material_elements[material_id[d1]][s1])
+                    is2 = self.all_species.index(material_elements[material_id[d1]][s2])
+                    rdK00[self.get_kappa_idx(is1, is2), d1] = self.K_reduction(dK00)
 
-        rdK11 = np.empty((n_species, n_species, X2.shape[0]))
-        for s1 in range(n_species):
-            for s2 in range(s1):
-                for d2 in range(X2.shape[0]):
+        rdK11 = np.empty((self.n_kappa, X2.shape[0]))
+        for d2 in range(X2.shape[0]):
+            for s1 in range(len(self.elements[material_id2[d2]])):
+                for s2 in range(s1):
                     if self.materials is not None:
                         kappa22 = kappa_all[(material_id2[d2], material_id2[d2])]
                     else:
@@ -2554,8 +2561,44 @@ class SOAP(Kern):
                            np.einsum('ijk, mnk, jn', pss2[d2][:, :, s1, :], pss2[d2][:, :, s2, :], kappa22).real + \
                            np.einsum('ijk, mnk, jn', pss2[d2][:, :, s2, :], pss2[d2][:, :, s1, :], kappa22).real
 
-                    rdK11[s1, s2, d1] = rdK11[s2, s1, d1] = self.K_reduction(dK11)
+                    is1 = self.all_species.index(material_elements[material_id2[d2]][s1])
+                    is2 = self.all_species.index(material_elements[material_id2[d2]][s2])
+                    rdK11[self.get_kappa_idx(is1, is2), d2] = self.K_reduction(dK11)
 
+        for d1 in range(X.shape[0]):
+            for d2 in range(X2.shape[0]):
+                lspecies = all_species[(material_id[d1], material_id2[d2])]
+                for s1 in range(len(lspecies)):
+                    for s2 in range(s1):
+                        i1 = material_elements[material_id[d1]].index(lspecies[s1])
+                        i2 = material_elements[material_id2[d2]].index(lspecies[s2])
+                        is1 = self.all_species.index(material_elements[material_id[d1]][s1])
+                        is2 = self.all_species.index(material_elements[material_id2[d2]][s2])
+                        kappa_idx = self.get_kappa_idx(is1, is2)
+                        if self.materials is not None:
+                            kappa = kappa_all[(material_id[d1], material_id2[d2])]
+                        else:
+                            kappa = kappa_full
+                        if self.verbosity > 1:
+                            self.print('\rRed. {:04.1f}%: '.format(100 * (d1 + 0.) / X.shape[0]),
+                                       end='')
+                            sys.stdout.flush()
+
+                        dK01 = np.einsum('ijk, mnk, jn', pss[d1][:, i1, :, :], pss2[d2][:, i2, :, :], kappa).real + \
+                               np.einsum('ijk, mnk, jn', pss[d1][:, i2, :, :], pss2[d2][:, i1, :, :], kappa).real + \
+                               np.einsum('ijk, mnk, jn', pss[d1][:, :, i1, :], pss2[d2][:, :, i2, :], kappa).real + \
+                               np.einsum('ijk, mnk, jn', pss[d1][:, :, i2, :], pss2[d2][:, :, i1, :], kappa).real
+
+                        rdK01 = self.K_reduction(dK01)
+                        rK01 = K[d1, d2] * np.sqrt(rK00[d1] * rK00[d2])
+
+                        dKij = rdK01 / np.sqrt(rK00[d1] * rK11[d2])
+                        dKij -= 0.5 * rK01 / (rK00[d1] * rK11[d2]) ** (1.5) \
+                                * (rdK00[kappa_idx, d1] * rK11[d2] + rK00[d1] * rdK11[kappa_idx, d2])
+                        dKij *= self.exponent * pow(K[d1, d2], self.exponent - 1.)
+
+                        dK_dkappa[kappa_idx, d1, d2] = dKij
+        """
         for s1 in range(n_species):
             for s2 in range(s1):
                 for d1 in range(X.shape[0]):
@@ -2582,7 +2625,7 @@ class SOAP(Kern):
                         dKij *= self.exponent * pow(K[d1, d2], self.exponent - 1.)
 
                         dK_dkappa[s1, s2, d1, d2] = dKij
-
+        """
         # dK/d\alpha
         # Pre-compute terms dependent on only one structure
         rdK00 = np.empty((n_species, X.shape[0]))
