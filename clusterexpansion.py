@@ -83,7 +83,10 @@ def configuration_density(configurations, elements):
 class ClusterExpansion:
     def __init__(self, diameters=None, base_dir='.', base_lattice='lat.in',
                  data_filename='energy', two_d=False, use_only=None,
-                 ce_type='standard', m_vbce=None, intensive=False):
+                 ce_type='standard', m_vbce=None, intensive=False,
+                 verbosity=0, use_only_full_path=False,
+                 pure_element_folders=None):
+        self.verbosity = verbosity
         self.design_vectors = {}
         self.concentration = {}
         self.two_d = two_d
@@ -97,11 +100,16 @@ class ClusterExpansion:
                                                         f, data_filename))]
         self.exp_folders.sort(key=int)
         if use_only is not None:
-            if type(use_only[0]) == int:
-                self.exp_folders = list(np.asarray(self.exp_folders)[use_only])
-            elif type(use_only[0]) == str:
-                self.exp_folders = [os.path.join(base_dir,
-                                                 f) for f in use_only]
+            if not use_only_full_path:
+                if isinstance(use_only[0], (int, long)):
+                    self.exp_folders = list(np.asarray(self.exp_folders)[use_only])
+                elif isinstance(use_only[0], six.string_types):
+                    self.exp_folders = [os.path.join(base_dir,
+                                                     f) for f in use_only]
+            else:
+                if isinstance(use_only[0], six.string_types):
+                    self.exp_folders = list(use_only)
+
         self.diameters = diameters
         self.input_lattice = os.path.join(base_dir, base_lattice)
         ilattice = open(self.input_lattice)
@@ -113,7 +121,11 @@ class ClusterExpansion:
         ilattice.close()
         self.n_at_basis = x_t
 
-        if not os.path.isdir(os.path.join(base_dir, '0')):
+        if pure_element_folders is None:
+            pure_element_folders = ['0', '1']
+        self.pure_element_folders = pure_element_folders
+
+        if not os.path.isdir(os.path.join(base_dir, pure_element_folders[0])):
             self.make_new_structures(N=1)
 
         self.update_clusters()
@@ -134,11 +146,11 @@ class ClusterExpansion:
         self.data_errors = np.empty(self.n_data)
         self.design_matrix = np.empty((self.n_data, self.n_basis))
 
-        if not os.path.isfile(os.path.join(base_dir, '0', data_filename)):
+        if not os.path.isfile(os.path.join(base_dir, pure_element_folders[0], data_filename)):
             print('WARNING: no %s file in folder 0' % data_filename)
             self.run_new_structure(['0'])
 
-        folder = '0'
+        folder = pure_element_folders[0]
         energy = np.loadtxt(os.path.join(base_dir, folder, data_filename))
         if energy.shape == ():
             energy = energy.reshape((1, ))
@@ -155,14 +167,14 @@ class ClusterExpansion:
             self.E_pure_2 = self.E_pure_2/x_t
         self.concentration[folder] = (0, 0, x_t)
 
-        if not os.path.isdir(os.path.join(base_dir, '1')):
+        if not os.path.isdir(os.path.join(base_dir, pure_element_folders[1])):
             self.make_new_structures(N=1)
             self.run_new_structure(['1'])
-        elif not os.path.isfile(os.path.join(base_dir, '1', data_filename)):
+        elif not os.path.isfile(os.path.join(base_dir, pure_element_folders[1], data_filename)):
             print('WARNING: no %s file in folder 1' % data_filename)
             self.run_new_structure(['1'])
 
-        folder = '1'
+        folder = pure_element_folders[1]
         energy = np.loadtxt(os.path.join(base_dir, folder, data_filename))
         if energy.shape == ():
             energy = energy.reshape((1, ))
@@ -327,7 +339,8 @@ class ClusterExpansion:
         for i, folder in enumerate(exp_folders):
             base_folder = os.path.join(self.base_dir, folder)
             x, x_1, x_t = self.get_concentration(base_folder)
-            print('\rcorrdump {}/{}: {}'.format(i, len(exp_folders), base_folder), end='')
+            if self.verbosity:
+                print('\rcorrdump {}/{}: {}'.format(i, len(exp_folders), base_folder), end='')
             self.design_matrix[i, :] = self.get_design_vector(base_folder,
                                                               x, x_1, x_t,
                                                               force_update,
@@ -350,7 +363,8 @@ class ClusterExpansion:
         self.design_matrix_built = True
 
     def fit(self, mode='RVM', use_only=None, fit_formation=True,
-            keep_for_testing=None, save_design=False, load_design=False):
+            keep_for_testing=None, save_design=False, load_design=False,
+            verbosity=0):
         self.fit_formation = fit_formation
         self.fitter = []
         n_train = self.data_values.shape[0]
@@ -376,17 +390,17 @@ class ClusterExpansion:
         if mode == 'RVM':
             for i in range(self.data_values.shape[1]):
                 if (self.data_values[:, i] == 0.).all():
-                    self.fitter.append(RVM(verbosity=2,
+                    self.fitter.append(RVM(verbosity=self.verbosity,
                                            Phi=self.design_matrix))
                     continue
-                self.fitter.append(RVM(verbosity=2))
+                self.fitter.append(RVM(verbosity=self.verbosity))
                 self.fitter[-1].regression(
                     self.data_values[:, i][self.train_idx].reshape(n_train, 1),
                     design_matrix=np.squeeze(self.design_matrix[self.train_idx]))
                 # B[:, i] = self.fitter[-1].m.flatten()
         elif mode == 'BRR':
             for i in range(self.data_values.shape[1]):
-                self.fitter.append(BLR.BLR(verbosity=1))
+                self.fitter.append(BLR.BLR(verbosity=self.verbosity))
                 self.fitter[-1].regression(
                     self.data_values[self.train_idx, i, np.newaxis],
                     design_matrix=self.design_matrix[self.train_idx])
@@ -475,7 +489,8 @@ class ClusterExpansion:
         for i, folder in enumerate(folders):
             base_folder = os.path.join(self.base_dir, folder)
             x, x_1, x_t = self.get_concentration(base_folder)
-            print('\rcorrdump {}/{}: {}'.format(i, len(folders), base_folder), end='')
+            if self.verbosity:
+                print('\rcorrdump {}/{}: {}'.format(i, len(folders), base_folder), end='')
             design_matrix[i, :] = self.get_design_vector(base_folder,
                                                          x, x_1, x_t,
                                                          force_update,
@@ -494,6 +509,25 @@ class ClusterExpansion:
 
         return mean, error
 
+    def predict(self, folders):
+        """Returns the mean and variance of the predictions.
+        Provided for compatibility with GPy
+        
+        Parameters
+        ----------
+        folders : list of str
+
+        Returns
+        -------
+        mean : 2-D np.ndarray
+            (N, n_var) array with the means
+        variance : 2-D np.ndarray
+            (N, n_var) array with the variances
+
+        """
+        mean, std = self.prediction(folders.ravel())
+        return mean, std**2
+
     def eval_error(self, B, design_matrix, data_values):
         PRED_TEST = np.dot(design_matrix, B)
         ERR_TEST = np.sqrt(np.sum(np.square(
@@ -502,7 +536,9 @@ class ClusterExpansion:
         return ERR_TEST
 
     def update_clusters(self):
-        output_lattice = os.path.join(self.base_dir, '0/str.out')
+        output_lattice = os.path.join(self.base_dir,
+                                      self.pure_element_folders[0],
+                                      'str.out')
         subprocess.check_output(["corrdump",
                                  "-l", self.input_lattice,
                                  "-2="+str(self.diameters[0]),
@@ -512,48 +548,10 @@ class ClusterExpansion:
                                  "-6="+str(self.diameters[4]),
                                  "-s", output_lattice])
 
-        # clustersf = open(os.path.join(self.base_dir, 'clusters.out'))
         self.clusters = ClustersFileParser('clusters.out')
         self.clusters.parse()
-        self.clusters.cluster_info()
-        # clustersf = open('clusters.out')
-        # self.clusters = []
-        # m = True
-        # r = False
-        # n = False
-        # a = False
-        # for i, line in enumerate(clustersf.readlines()):
-        #     if m:
-        #         multiplicity = int(line)
-        #         self.clusters.append({'multiplicity': multiplicity})
-        #         self.clusters[-1]['coordinates'] = []
-        #         m = False
-        #         r = True
-        #         continue
-        #     elif r:
-        #         radius = float(line)
-        #         self.clusters[-1]['diameter'] = radius
-        #         r = False
-        #         n = True
-        #         continue
-        #     elif n:
-        #         natoms = int(line)
-        #         self.clusters[-1]['n_points'] = natoms
-        #         n = False
-        #         a = True
-        #         continue
-        #     elif a:
-        #         if natoms == 0:
-        #             a = False
-        #             m = True
-        #             continue
-        #         positions = np.array(line.split()[:3], dtype=float)
-        #         self.clusters[-1]['coordinates'].append(positions)
-        #         natoms -= 1
-        #         continue
-        # clustersf.close()
-        # for c in self.clusters:
-        #     c['coordinates'] = np.array(c['coordinates'])
+        if self.verbosity:
+            self.clusters.cluster_info()
 
     def set_maximum_cluster_size_vbce(self, sizes):
         self.maximum_cluster_size_vbce = sizes
@@ -562,22 +560,28 @@ class ClusterExpansion:
         if not self.fitted:
             self.fit()
         import matplotlib.pyplot as plt
-        groups = ['pair', 'triplet', 'quartet', 'quintet']
+        groups = ['pair', 'triplet', 'quartet', 'quintet', 'sextet']
         labels = []
         max_atoms = -1
         offset = 15
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(20, 6))
+        plt.yscale("log", nonposy='clip')
         for i, cluster in enumerate(self.clusters):
-            if cluster['n_points'] < 2:
-                continue
             if cluster['n_points'] > max_atoms:
                 max_atoms = cluster['n_points']
             x = cluster['diameter'] + offset*(cluster['n_points'] - 2)
             y = self.eci_mean[which, i]
             y_std = self.eci_std[which, i]
-            plt.errorbar(x, y*1.e3, yerr=1.96e3*y_std,
-                         fmt='o', color='r', markersize=7,
-                         ecolor='r', elinewidth=3, mew=3)
+            if cluster['n_points'] < 2:
+                # continue
+                x = -2. + cluster['n_points']
+            if np.abs(y) < 1.e-10:
+                plt.scatter(x, 1.e-5,
+                             marker='o', color='r', s=5)
+            else:
+                plt.errorbar(x, np.abs(y)*1.e3, yerr=1.96e3*y_std,
+                             fmt='o', color='r', markersize=7,
+                             ecolor='r', elinewidth=3, mew=3)
         if self.ce_type == 'vbce':
             counter = 0
             for i, j in enumerate(self.maximum_cluster_size_vbce):
@@ -596,7 +600,9 @@ class ClusterExpansion:
                         plt.text(x + 0.2, y*1.e3, str(k), fontsize=20)
                     counter += 1
 
-        plt.xlim([0.0, (max_atoms - 1)*offset])
+        plt.xlim([-3., (max_atoms - 1)*offset])
+        plt.ylim([.9e-5, 1.e2])
+        plt.xticks(np.arange(0., offset * (max_atoms-1), offset/3.))
         xticks = plt.xticks()[0]
         labels = [str(x % offset) for x in xticks]
         i = 0
@@ -607,14 +613,15 @@ class ClusterExpansion:
                     labels[j] = str(offset)
                 i += 1
 
-        for i in range(max_atoms-2):
-            plt.axvline((i + 1)*offset, linestyle='--', color='k')
+        for i in range(max_atoms-1):
+            plt.axvline(i*offset, linestyle='--', color='k')
         plt.xticks(xticks, labels)
         plt.xlabel("Cluster diameter (A)", fontsize=28)
         plt.ylabel("ECI strength [meV]", fontsize=28)
         plt.tick_params(labelsize=24)
         plt.axhline(0.0, color='k')
-        plt.tight_layout()
+        plt.gcf().set_tight_layout(True)
+        plt.savefig('ECI_diameter.pdf')
 
         plt.figure(figsize=(10, 8))
         current_size = 0
@@ -646,7 +653,7 @@ class ClusterExpansion:
         plt.ylabel("ECI strength [meV]", fontsize=28)
         plt.tick_params(labelsize=24)
         plt.axhline(0.0, color='k')
-        plt.tight_layout()
+        plt.gcf().set_tight_layout(True)
         plt.show()  # block=False)
 
     def plot_vbce_eci(self, points=0, which=0):
