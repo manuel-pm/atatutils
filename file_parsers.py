@@ -582,6 +582,9 @@ class ATATStructure(object):
         Base directory to look for the structure file.
     atoms : ase.Atoms
         Atoms object of the structure.
+    auxiliary_elements : list of int
+        Atomic numbers for the positions if they are not in
+        the structure file.
 
     Notes
     -----
@@ -596,7 +599,7 @@ class ATATStructure(object):
     0.6666666 0.3333333 0.5 Al
 
     """
-    def __init__(self, structure_file='str.out', base_dir='.', atoms=None):
+    def __init__(self, structure_file='str.out', base_dir='.', atoms=None, auxiliary_elements=None):
         self._atomic_numbers = None
         self._chemical_symbols = None
         self._coordinate_system = np.empty((3, 3), dtype=float)
@@ -604,6 +607,7 @@ class ATATStructure(object):
         self._unit_cell = np.empty((3, 3), dtype=float)
         self._number_of_sites = None
         self._vacancy_id = -1
+        self.auxiliary_elements = auxiliary_elements
 
         if atoms is not None:
             self.structure_file = None
@@ -747,10 +751,14 @@ class ATATStructure(object):
             positions = []
             chemical_symbols = []
             atomic_numbers = []
-            for line in rest:
-                split = line.split()
+            for i, line in enumerate(rest):
+                split = line.strip().split()
                 positions.append(np.dot(np.array(split[:3], dtype=float), self.coordinate_system))
-                chemical_symbols.append(split[3].split('=')[0])
+                if len(split) == 3:
+                    # Use given element list
+                    chemical_symbols.append(ase.data.chemical_symbols[self.auxiliary_elements[i]])
+                else:
+                    chemical_symbols.append(split[3].split('=')[0])
                 if chemical_symbols[-1] == 'Vac':
                     atomic_numbers.append(self._vacancy_id)
                 else:
