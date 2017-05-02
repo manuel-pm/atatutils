@@ -48,6 +48,7 @@ from shutil import copyfile
 
 import numpy as np
 
+import ase
 from ase import Atoms
 from ase.calculators.calculator import Parameters
 from ase.constraints import UnitCellFilter
@@ -57,11 +58,11 @@ from ase.optimize.lbfgs import LBFGS as ASELBFGS
 from ase.parallel import barrier, parprint, paropen, rank
 from ase.optimize.precon import Exp, PreconLBFGS, PreconFIRE
 # import ase.utils.geometry as ase_geometry
-import ase.build as ase_geometry
+import ase.build
 
 
 def read_lattice_file(filename='lat.in', pbc=(1, 1, 1), verbosity=0,
-                    minimize_tilt=False, niggli_reduce=False):
+                      minimize_tilt=False, niggli_reduce=False):
     """ Reads an ATAT lattice file (lat.in) and returns the cell, positions and
     atom types """
     if verbosity > 1:
@@ -79,18 +80,18 @@ def read_lattice_file(filename='lat.in', pbc=(1, 1, 1), verbosity=0,
         cs[1, :] = np.array(ifile.readline().split())
         cs[2, :] = np.array(ifile.readline().split())
     else:
-        #print("WARNING: [a, b, c, alpha, beta, gamma] format" +
-        #      " not well tested")
+        # print("WARNING: [a, b, c, alpha, beta, gamma] format" +
+        #       " not well tested")
         a, b, c, alpha, beta, gamma = items
         alpha, beta, gamma = [angle*np.pi/180.
                               for angle in [alpha, beta, gamma]]
         (ca, sa) = (math.cos(alpha), math.sin(alpha))
         (cb, sb) = (math.cos(beta),  math.sin(beta))
         (cg, sg) = (math.cos(gamma), math.sin(gamma))
-        # Vunit is a volume of unit cell with a=b=c=1
-        Vunit = math.sqrt(1.0 + 2.0*ca*cb*cg - ca*ca - cb*cb - cg*cg)
+        # v_unit is a volume of unit cell with a=b=c=1
+        v_unit = math.sqrt(1.0 + 2.0*ca*cb*cg - ca*ca - cb*cb - cg*cg)
         # from the reciprocal lattice
-        ar = sa/(a*Vunit)
+        ar = sa/(a*v_unit)
         cgr = (ca*cb - cg)/(sa*sb)
         sgr = math.sqrt(1.0 - cgr**2)
         cs[0, :] = np.array([1.0/ar, -cgr/sgr/ar, cb*a])
@@ -162,18 +163,18 @@ def read_atat_input(filename='str.out', pbc=(1, 1, 1), verbosity=0,
         cs[1, :] = np.array(ifile.readline().split())
         cs[2, :] = np.array(ifile.readline().split())
     else:
-        #print("WARNING: [a, b, c, alpha, beta, gamma] format" +
-        #      " not well tested")
+        # print("WARNING: [a, b, c, alpha, beta, gamma] format" +
+        #       " not well tested")
         a, b, c, alpha, beta, gamma = items
         alpha, beta, gamma = [angle*np.pi/180.
                               for angle in [alpha, beta, gamma]]
         (ca, sa) = (math.cos(alpha), math.sin(alpha))
         (cb, sb) = (math.cos(beta),  math.sin(beta))
         (cg, sg) = (math.cos(gamma), math.sin(gamma))
-        # Vunit is a volume of unit cell with a=b=c=1
-        Vunit = math.sqrt(1.0 + 2.0*ca*cb*cg - ca*ca - cb*cb - cg*cg)
+        # v_unit is a volume of unit cell with a=b=c=1
+        v_unit = math.sqrt(1.0 + 2.0*ca*cb*cg - ca*ca - cb*cb - cg*cg)
         # from the reciprocal lattice
-        ar = sa/(a*Vunit)
+        ar = sa/(a*v_unit)
         cgr = (ca*cb - cg)/(sa*sb)
         sgr = math.sqrt(1.0 - cgr**2)
         cs[0, :] = np.array([1.0/ar, -cgr/sgr/ar, cb*a])
@@ -217,7 +218,7 @@ def read_atat_input(filename='str.out', pbc=(1, 1, 1), verbosity=0,
     # Modify cell to the maximally-reduced Niggli unit cell or minimize tilt
     #    angle between cell axes. Niggli takes precedence.
     if niggli_reduce:
-        ase_geometry.niggli_reduce(atoms)
+        ase.build.niggli_reduce(atoms)
         if verbosity > 0:
             parprint("Niggli cell:\n {}".format(atoms.get_cell()))
             parprint("N. cell volume: {}".format(np.linalg.det(atoms.get_cell())))
@@ -229,7 +230,7 @@ def read_atat_input(filename='str.out', pbc=(1, 1, 1), verbosity=0,
             copyfile('str_niggli.out', 'str.out')
         barrier()
     elif minimize_tilt:
-        ase_geometry.minimize_tilt(atoms)
+        ase.build.minimize_tilt(atoms)
         if verbosity > 0:
             parprint("Minimum tilt cell:\n {}".format(atoms.cell))
             parprint("M. T. cell volume: {}".format(np.linalg.det(atoms.cell)))
@@ -332,31 +333,33 @@ class ATAT2EMT:
         """ Runs static simulation (no position relaxation) """
         return self.atoms.get_potential_energy()
 
-    def optimise_cell(self, fmax=0.01, use_precon=None, use_armijo=None):
+    def optimise_cell(self, fmax=0.01, use_precon=None, use_armijo=None, optimizer=None):
         from asap3.io.trajectory import Trajectory
         """ Relax cell to a given force/stress threshold """
         if use_precon is None:
             use_precon = self.parameters.use_precon
         if use_armijo is None:
             use_armijo = self.parameters.use_armijo
+        if optimizer is None:
+            optimizer = self.parameters.optimizer
         if use_precon:
             precon = Exp(A=3, use_pyamg=False)
         else:
             precon = None
         uf = UnitCellFilter(self.atoms)
-        if self.parameters.optimizer == 'BFGS':
+        if optimizer == 'BFGS':
             relax = BFGS(uf)
-        elif self.parameters.optimizer == 'FIRE':
+        elif optimizer == 'FIRE':
             relax = PreconFIRE(uf, precon=precon)
-        elif self.parameters.optimizer == 'ase-FIRE':
+        elif optimizer == 'ase-FIRE':
             relax = ASEFIRE(uf)
-        elif self.parameters.optimizer == 'LBFGS':
+        elif optimizer == 'LBFGS':
             relax = PreconLBFGS(uf, precon=precon, use_armijo=use_armijo)
-        elif self.parameters.optimizer == 'ase-LBFGS':
+        elif optimizer == 'ase-LBFGS':
             relax = ASELBFGS(uf)
         else:
             parprint("ERROR: unknown optimizer {}. "
-                     "Reverting to BFGS".format(self.parameters.optimizer))
+                     "Reverting to BFGS".format(optimizer))
             relax = BFGS(self.atoms)
         name = self.atoms.get_chemical_formula()
         traj = Trajectory(name + '_relax.traj', 'w', self.atoms, properties=['energy', 'forces', 'stress'])
@@ -365,6 +368,8 @@ class ATAT2EMT:
         relax.run(fmax=fmax, steps=100)
         if not relax.converged():
             relax = BFGS(uf)
+            relax.attach(traj, interval=1)
+            relax.attach(lambda: write_atat_input(self.atoms, 'str_last.out'))
             relax.run(fmax=fmax, steps=100)
             if not relax.converged():
                 max_force = self.atoms.get_forces()
@@ -372,7 +377,7 @@ class ATAT2EMT:
                 print('WARNING: optimisation not converged.' +
                       ' Maximum force: %.4f' % max_force)
 
-    def optimise_positions(self, fmax=0.01, use_precon=None, use_armijo=None):
+    def optimise_positions(self, fmax=0.01, use_precon=None, use_armijo=None, optimizer=None):
         from asap3.io.trajectory import Trajectory
         """ Relax atoms positions with the fixed cell to a given force
         threshold """
@@ -380,35 +385,88 @@ class ATAT2EMT:
             use_precon = self.parameters.use_precon
         if use_armijo is None:
             use_armijo = self.parameters.use_armijo
+        if optimizer is None:
+            optimizer = self.parameters.optimizer
 
         if use_precon:
             precon = Exp(A=3, use_pyamg=False)
         else:
             precon = None
-        if self.parameters.optimizer == 'BFGS':
+        if optimizer == 'BFGS':
             relax = BFGS(self.atoms)
-        elif self.parameters.optimizer == 'FIRE':
+        elif optimizer == 'FIRE':
             relax = PreconFIRE(self.atoms, precon=precon)
-        elif self.parameters.optimizer == 'ase-FIRE':
+        elif optimizer == 'ase-FIRE':
             relax = ASEFIRE(self.atoms)
-        elif self.parameters.optimizer == 'LBFGS':
+        elif optimizer == 'LBFGS':
             relax = PreconLBFGS(self.atoms, precon=precon, use_armijo=use_armijo)
-        elif self.parameters.optimizer == 'ase-LBFGS':
+        elif optimizer == 'ase-LBFGS':
             relax = ASELBFGS(self.atoms)
         else:
             parprint("ERROR: unknown optimizer {}. "
-                     "Reverting to BFGS".format(self.parameters.optimizer))
+                     "Reverting to BFGS".format(optimizer))
             relax = BFGS(self.atoms)
+
         name = self.atoms.get_chemical_formula()
-        traj = Trajectory(name + '_relax.traj', 'w', self.atoms, properties=['energy', 'forces', 'stress'])
+        traj = Trajectory(name + '_relax.traj', 'w', self.atoms, properties=['energy', 'forces'])
         relax.attach(traj, interval=1)
         relax.attach(lambda: write_atat_input(self.atoms, 'str_last.out'))
         relax.run(fmax=fmax, steps=100)
         if not relax.converged():
-            relax = LBFGS(self.atoms)
+            relax = BFGS(self.atoms)
+            relax.attach(traj, interval=1)
+            relax.attach(lambda: write_atat_input(self.atoms, 'str_last.out'))
             relax.run(fmax=fmax, steps=100)
             if not relax.converged():
                 max_force = self.atoms.get_forces()
                 max_force = np.sqrt((max_force**2).sum(axis=1).max())
                 print('WARNING: optimisation not converged.' +
                       ' Maximum force: %.4f' % max_force)
+
+    def dump_outputs(self):
+        atoms = self.atoms
+
+        with open(os.path.join('.', 'energy'), 'wb') as ofile:
+            ofile.write(str(atoms.get_potential_energy()))
+
+        with open(os.path.join('.', 'str_relax.out'), 'wb') as ofile:
+            ofile.write('1.0 1.0 1.0 90. 90. 90.\n')
+            for i in range(3):
+                ofile.write(' '.join("{:.12f}".format(cell) for cell in atoms.get_cell()[i]))
+            for i, atom in enumerate(atoms.get_chemical_symbols()):
+                ofile.write(' '.join("{:.12f}".format(p) for p in atoms.get_positions()[i]) + ' ' + atom)
+            ofile.write('\n')
+
+        with open(os.path.join('.', 'forces.out'), 'wb') as ofile:
+            for i, atom in enumerate(atoms.get_chemical_symbols()):
+                ofile.write(' '.join("{:.12f}".format(f) for f in atoms.get_forces()[i]))
+                ofile.write('\n')
+
+        try:
+            stress = atoms.get_stress(voigt=False)
+            with open(os.path.join('.', 'stress.out'), 'wb') as ofile:
+                for i in range(3):
+                    ofile.write(' '.join("{:.12f}".format(s) for s in stress[i]))
+                    ofile.write('\n')
+        except:
+            if self.verbosity:
+                parprint('stress not available')
+
+        try:
+            with open(os.path.join('.', 'dos.out'), 'wb') as ofile:
+                nelec = atoms.calc.get_number_of_electrons()
+                natoms = atoms.get_number_of_atoms()
+                ef = atoms.calc.get_fermi_level()
+                e, dos = atoms.calc.get_dos(npts=500)
+                if type(ef) == np.ndarray:
+                    e -= ef[0]
+                else:
+                    e -= ef
+                dE = e[1] - e[0]
+                dos *= natoms
+                ofile.write('{:f} {:.12f} 1.0\n'.format(nelec, dE))
+                for d in dos:
+                    ofile.write('{:.12f}\n'.format(dos))
+        except:
+            if self.verbosity:
+                parprint('DOS not available')
