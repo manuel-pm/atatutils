@@ -307,6 +307,8 @@ class ElasticConstants(object):
         for ivol in range(self.n_volumes):
             volume_str = '{}'.format(self.delta_v * ivol)
             if save_at is not None:
+                if not os.path.exists(save_at):
+                    os.makedirs(save_at)
                 elas_name = os.path.join(save_at, 'elas{}'.format(volume_str))
                 elas_err_name = os.path.join(save_at, 'elas{}_err'.format(volume_str))
 
@@ -472,6 +474,8 @@ class ElasticConstants(object):
         B = {}
         for volume_str in self.C.keys():
             if save_at is not None:
+                if not os.path.exists(save_at):
+                    os.makedirs(save_at)
                 b_name = os.path.join(save_at, 'bulk_modulus_{}{}'.format(average, volume_str))
                 if os.path.isfile(b_name):
                     B[volume_str] = np.loadtxt(b_name)
@@ -510,6 +514,8 @@ class ElasticConstants(object):
         G = {}
         for volume_str in self.C.keys():
             if save_at is not None:
+                if not os.path.exists(save_at):
+                    os.makedirs(save_at)
                 g_name = os.path.join(save_at, 'shear_modulus_{}{}'.format(average, volume_str))
                 if os.path.isfile(g_name):
                     G[volume_str] = np.loadtxt(g_name)
