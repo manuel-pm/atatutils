@@ -572,7 +572,7 @@ def partition1d_weights(weights, rank, size):
         group = np.argmin(np.asarray(sums))
         partition_i[group].append(i_w)
         partition_w[group].append(w_i)
-    return sorted(partition_i[rank], key=int)
+    return np.array(sorted(partition_i[rank], key=int))
 
 
 def partition1d_weights_chunked(weights, rank, size):
@@ -600,6 +600,13 @@ def partition1d_weights_chunked(weights, rank, size):
         Offsets (in rows) of all the chunks.
     
     """
+    if len(weights) < size:
+        chunks = [[0, 0] for i in range(size)]
+        for i in range(len(weights)):
+            chunks[i] = [i, i + 1]
+        chunksizes = [chunk[1] - chunk[0] for chunk in chunks]
+        offsets = [chunk[0] for chunk in chunks]
+        return chunks[rank], np.array(chunksizes), np.array(offsets)
     lweight = sum(weights) / size
     remainder = sum(weights) % size
     lweights = lweight * np.ones(size)
@@ -619,9 +626,11 @@ def partition1d_weights_chunked(weights, rank, size):
                 chunks[group].append(i_w + 1)
             else:
                 break
+    if len(chunks[-1]) == 1:
+        chunks[-1].append(i_w + 1)
     chunksizes = [chunk[1] - chunk[0] for chunk in chunks]
     offsets = [chunk[0] for chunk in chunks]
-    return chunks[rank], chunksizes, offsets
+    return chunks[rank], np.array(chunksizes), np.array(offsets)
 
 
 def partition_ltri_rows(nrows, rank, size):
