@@ -516,7 +516,7 @@ def partition1d(ndata, rank, size):
 
     Parameters
     ----------
-     ndata : int > 0
+    ndata : int > 0
         Number of elements of the array.
     rank : int >=0
         Rank (id) of the process.
@@ -542,6 +542,86 @@ def partition1d(ndata, rank, size):
     # Local update
     lchunk = [offsets[rank], offsets[rank] + chunksizes[rank]]
     return lchunk, chunksizes, offsets
+
+
+def partition1d_weights(weights, rank, size):
+    """Partition of a 1D array into sets of similar weight sum.
+    
+    Parameters
+    ----------
+    weights : np.ndarray
+        Array with the weight for each elements of the array
+        to be partitioned.
+    rank : int >=0
+        Rank (id) of the process.
+    size : int >=0
+        Number of processes.
+
+    Returns
+    -------
+     : 1-D ndarray
+        Array with the indices of the elements of the local partition.
+        
+    """
+    partition_i = [[] for i in range(size)]
+    partition_w = [[] for i in range(size)]
+    idx_sorted = np.argsort(np.asarray(weights))
+    for i_w in idx_sorted[::-1]:
+        sums = [sum(group) for group in partition_w]
+        w_i = weights[i_w]
+        group = np.argmin(np.asarray(sums))
+        partition_i[group].append(i_w)
+        partition_w[group].append(w_i)
+    return sorted(partition_i[rank], key=int)
+
+
+def partition1d_weights_chunked(weights, rank, size):
+    """Partition of a 1D array into sets of similar weight sum.
+    The partition is constrained to use contiguous chunks
+    of the original array.
+
+    Parameters
+    ----------
+    weights : np.ndarray
+        Array with the weight for each elements of the array
+        to be partitioned.
+    rank : int >=0
+        Rank (id) of the process.
+    size : int >=0
+        Number of processes.
+
+    Returns
+    -------
+    lchunk : list of 2 int
+        Indices (first and one past last) of the chunk for process rank.
+    chunksizes : 1-D ndarray of int
+        Size (in rows) of all the chunks.
+    offsets : 1-D ndarray of int
+        Offsets (in rows) of all the chunks.
+    
+    """
+    lweight = sum(weights) / size
+    remainder = sum(weights) % size
+    lweights = lweight * np.ones(size)
+    lweights[:remainder] += 1
+    partition_i = [[] for i in range(size)]
+    partition_w = [[] for i in range(size)]
+    chunks = [[] for i in range(size)]
+    group = 0
+    chunks[0].append(0)
+    for i_w, w_i in enumerate(weights):
+        partition_w[group].append(w_i)
+        lsum = sum(partition_w[group])
+        if lsum >= lweights[group]:
+            chunks[group].append(i_w + 1)
+            group += 1
+            if group < size:
+                chunks[group].append(i_w + 1)
+            else:
+                break
+    chunksizes = [chunk[1] - chunk[0] for chunk in chunks]
+    offsets = [chunk[0] for chunk in chunks]
+    return chunks[rank], chunksizes, offsets
 
 
 def partition_ltri_rows(nrows, rank, size):
