@@ -402,15 +402,15 @@ class ClusterExpansion:
             for i in range(self.data_values.shape[1]):
                 self.fitter.append(BLR.BLR(verbosity=self.verbosity))
                 self.fitter[-1].regression(
-                    self.data_values[self.train_idx, i, np.newaxis],
-                    design_matrix=self.design_matrix[self.train_idx])
+                    self.data_values[:, i][self.train_idx].reshape(n_train, 1),
+                    design_matrix=np.squeeze(self.design_matrix[self.train_idx]))
                 # B[:, i] = self.fitter[-1].m.flatten()
         elif mode == 'BL-RJMCMC':
             for i in range(self.data_values.shape[1]):
-                mcmc = BL_RJMCMC(self.design_matrix[self.train_idx, :],
-                                 self.data_values[self.train_idx, i],
-                                 self.design_matrix[self.test_idx, :],
-                                 self.data_values[self.test_idx, i],
+                mcmc = BL_RJMCMC(np.squeeze(self.design_matrix[self.train_idx]),
+                                 self.data_values[:, i][self.train_idx].ravel(),
+                                 np.squeeze(self.design_matrix[self.test_idx]),
+                                 self.data_values[:, i][self.test_idx].ravel(),
                                  10000000, 0.0012, 1000,
                                  100000, 100000, 'PLOT',
                                  outdir='OUT_rjmcmc')
