@@ -225,10 +225,12 @@ class ATATFolderParser(object):
             folders = [folder for folder in folders if folder in structures.keys()]
         all_structures = []
         for folder in folders:
-            all_structures += [os.path.join(self.base_dir, folder, s) for s in structures[folder]]
+            all_structures += [os.path.join(self.base_dir, folder, s)
+                               for s in structures[folder]]
         return all_structures
 
-    def get_property(self, property, formation=False, intensive=False, folders=None, structures=None):
+    def get_property(self, property, formation=False, intensive=False,
+                     folders=None, structures=None):
         """Get the given property and the structures which have it.
 
         Parameters
@@ -258,9 +260,10 @@ class ATATFolderParser(object):
 
         Notes
         -----
-        This functions treats each file as the property, i.e., if there are several values
-        per file all of them are associated to the same structure. If each value corresponds
-        to a different parameter (e.g., temperature) then you should use get_parametric_property.
+        This functions treats each file as the property, i.e., if there
+        are several values per file all of them are associated to the
+        same structure. If each value corresponds to a different parameter
+        (e.g., temperature) then you should use get_parametric_property.
 
         See Also
         --------
@@ -485,3 +488,70 @@ class ATATFolderParser(object):
                                 list_of_structures[i][folder] = structures[folder][pi] + list_of_structures[i][folder]
 
         return list_of_structures
+
+    @staticmethod
+    def folder_as_int(folder):
+        """Encodes a folder as an int. Two lists with lengths
+        are given to reduce the size of the int.
+        
+        Parameters
+        ----------
+        folder : str
+            Name of the folder to encode as int.
+
+        Returns
+        -------
+        as_int : int
+            Integer representation of the folder using ascii code.
+        split_lengths : list of int
+            Length of each element of the folder path.
+        char_lengths : list of lists of int
+            For each character, the length of its ascii
+            representation as str.
+
+        """
+        splits = folder.split('/')
+        split_lengths = [len(split) for split in splits]
+        str_rep = []
+        char_lengths = []
+        for split in splits:
+            char_lengths.append([])
+            for c in split:
+                char_lengths[-1].append(len(str(ord(c))))
+                str_rep.append('{}'.format(ord(c)))
+        as_int = int(''.join(str_rep))
+
+        return as_int, split_lengths, char_lengths
+
+    @staticmethod
+    def int_as_folder(as_int, split_lengths, char_lengths):
+        """Decodes the int representation of the folder name
+        back to its string representation.
+        
+        Parameters
+        ----------
+        as_int : int
+            Integer representation of the folder using ascii code.
+        split_lengths : list of int
+            Length of each element of the folder path.
+        char_lengths : list of lists of int
+            For each character, the length of its ascii
+            representation as str.
+
+        Returns
+        -------
+        folder : str
+            Folder name corresponding to the encoded input.
+
+        """
+        int_str = '{}'.format(as_int)
+        folder = ''
+        tip = 0
+        for i, sl in enumerate(split_lengths):
+            for cl in char_lengths[i]:
+                folder += chr(int(int_str[tip:tip + cl]))
+                tip += cl
+            if i < len(split_lengths) - 1:
+                folder += '/'
+
+        return folder
