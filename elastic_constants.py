@@ -66,7 +66,7 @@ class SJEOS(object):
         self.B1s = []
         self.blr = BLR.BLR()
 
-    def fit(self, V, E, beta=1e6):
+    def fit(self, volume, energy, beta=1e6):
         self.blr.regression(energy.reshape(len(energy), 1),
                             X=volume.reshape(len(volume), 1)**(1./3),
                             basis=EB.Basis('inverse_monomial', 4),
@@ -116,7 +116,32 @@ class SJEOS(object):
 
 
 # Get V(T)
-def get_V_T(fc_samples=1, plot=False):
+def get_V_T(samples=None, plot=False):
+    tmp_path = os.path.join('properties', 'tdep', 'T_batch.dat')
+    vol_path = os.path.join('properties', 'tdep', 'V_batch.dat')
+    tmp_batch = np.loadtxt(tmp_path)
+    vol_batch = np.loadtxt(vol_path)
+
+    tmp_mean = np.mean(tmp_batch, axis=1)
+    tmp_std = np.std(tmp_batch, axis=1)
+    vol_mean = np.mean(vol_batch, axis=1)
+    vol_std = np.std(vol_batch, axis=1)
+
+    n_tmp = tmp_batch.shape[0]
+    if samples is not None:
+        tmp_samples = np.empty((n_tmp, samples))
+        vol_samples = np.empty((n_tmp, samples))
+        for i in range(n_tmp):
+            tmp_samples[i, :] = np.random.normal(tmp_mean[i], tmp_std[i], samples)
+            vol_samples[i, :] = np.random.normal(vol_mean[i], vol_std[i], samples)
+    else:
+        tmp_samples = tmp_mean.reshape((n_tmp, 1))
+        vol_samples = vol_mean.reshape((n_tmp, 1))
+
+    return vol_samples, tmp_samples
+
+
+def get_V_T_from_free_energy(fc_samples=1, plot=False):
     str_relax = read_atat_input('str_relax.out')
     vol_relax = np.linalg.det(str_relax.cell)
     n_samples = 1000
@@ -200,9 +225,9 @@ def do_fit(index1, index2, stress, strain, patt, plot=False):
                       3: '#EEF093', 4: '#FFA4FF', 5: '#75ECFD'}
         sp.set_axis_bgcolor(colourDict[patt])
         # plot the data
-        #plt.plot([strain[0, index2], strain[-1, index2]],
-        #         [(cijFitted*strain[0, index2] + intercept)/units.GPa,
-        #          (cijFitted*strain[-1, index2] + intercept)/units.GPa])
+        # plt.plot([strain[0, index2], strain[-1, index2]],
+        #          [(cijFitted*strain[0, index2] + intercept)/units.GPa,
+        #           (cijFitted*strain[-1, index2] + intercept)/units.GPa])
         plt.plot(strain[:, index2], stress[:, index1]/units.GPa, 'ro')
         strain_interp = np.linspace(strain[0, index2], strain[-1, index2], 20)
         T, S = fitter.eval_regression(strain_interp[:, np.newaxis])
@@ -234,8 +259,13 @@ class ElasticConstants(object):
         self.base_dir = os.getcwd()
         self.verbosity = verbosity
         self.plot = plot
+
+        self.A_u = {}
+        self.B = {}
         self.C = {}
         self.C_err = {}
+        self.G = {}
+        self.T = {}
 
     def generate_strains(self):
         for ivol in range(self.n_volumes):
@@ -616,21 +646,24 @@ class ElasticConstants(object):
                     Bs[ivol, i] = (np.sum(csample[:3, :3]) / 9. + 1. / np.sum(ssample[:3, :3])) / 2.
         return Bs
 
-    def get_temperature_dependent(self, y_v):
-        C_samples = y_v.shape[1]
+    def get_temperature(self, samples=None):
+        V0s, T0s = get_V_T(samples)
+        n_samples = T0s.shape[1]
+        T = {}
+        # Volumes to interpolate at
         Vs = np.empty(self.n_volumes)
-        V0s, Ts = get_V_T(50)
-        V0s = np.array(V0s)
-        y_t = np.empty((Ts.shape[0], V0s.shape[1] * C_samples))
         for ivol in range(self.n_volumes):
+            volume_str = '{}'.format(self.delta_v * ivol)
+            T[volume_str] = np.empty(n_samples)
             V = np.linalg.det(self.structure.atoms.cell)
             Vs[ivol] = V * (1 + self.delta_v * ivol) ** 3
-        for i, T in enumerate(Ts):
-            V0 = V0s[i]
-            for j in range(V0.shape[0]):
-                lV = np.interp(T, Ts, V0s[:, j])
-                for k in range(C_samples):
-                    y_t[i, j] = np.interp(lV, Vs, y_v[:, k])
+        # For each V-T sample, interpolate at Vs
+        for i in range(n_samples):
+            lT0 = T0s[:, i]
+            lV0 = V0s[:, i]
+            for ivol in range(self.n_volumes):
+                volume_str = '{}'.format(self.delta_v * ivol)
+                T[volume_str][i] = np.interp(Vs[ivol], lV0, lT0)
+        self.T = T
 
-            if self.verbosity:
-                print('{} {} {}'.format(T, np.mean(y_t[i, :]), np.std(y_t[i, :])))
+        # print(Vs, y_t)

@@ -608,10 +608,9 @@ def partition1d_weights_chunked(weights, rank, size):
         offsets = [chunk[0] for chunk in chunks]
         return chunks[rank], np.array(chunksizes), np.array(offsets)
     lweight = sum(weights) / size
-    remainder = sum(weights) % size
+    # remainder = sum(weights) % size
     lweights = lweight * np.ones(size)
-    lweights[:remainder] += 1
-    partition_i = [[] for i in range(size)]
+    # lweights[:remainder] += 1
     partition_w = [[] for i in range(size)]
     chunks = [[] for i in range(size)]
     group = 0
